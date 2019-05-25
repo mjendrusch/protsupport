@@ -14,6 +14,8 @@ from pyrosetta.rosetta.core.scoring.dssp import Dssp
 from torchsupport.modules.structured import connected_entities as ce
 # from torchsupport.data.structured import SubgraphData
 
+from protsupport.data.embedding import one_hot_aa, one_hot_secondary
+
 def _sequence_from_pose(pose):
   pass # TODO
 
@@ -23,7 +25,7 @@ def _parse_node_file(path):
 class PDBData(Dataset):
   def __init__(self, path, transform=lambda x: x):
     self.data = np.array([
-      name
+      os.path.join(path, name)
       for name in os.listdir(path)
       if name.endswith("pdb.gz") or name.endswith("pdb")
     ])
@@ -52,6 +54,14 @@ class PDBNumeric(PDBData):
     self.mode = mode
     self.cache = cache
     self.exists = np.zeros_like(self.data, dtype=bool)
+
+    self.good = []
+    for idx, data_path in enumerate(self.data):
+      if os.path.isfile(data_path + ".trace.npy"):
+        self.exists[idx] = 1
+        self.good.append(idx)
+
+    self.sum = len(self.good)
 
   def _cb_distance(self, pose, sequence):
     n_res = pose.total_residue()
@@ -95,7 +105,7 @@ class PDBNumeric(PDBData):
       [*residue.atom("CA").xyz()]
       for residue in pose.residues
     ])
-    distance = eval(f"self._{mode}_distance")(pose, sequence)
+    distance = eval(f"self._{self.mode}_distance")(pose, sequence)
     hbonds = self._hbonds(pose, sequence)
     return NumericPose(
       trace, distance, hbonds, phi, psi, sequence, structure
@@ -119,22 +129,27 @@ class PDBNumeric(PDBData):
     hbonds = np.load(path + ".hbonds.npy")
     phi = np.load(path + ".phi.npy")
     psi = np.load(path + ".psi.npy")
-    sequence = np.load(path + ".sequence.npy")
-    structure = np.load(path + ".structure.npy")
+    sequence = str(np.load(path + ".sequence.npy"))
+    structure = str(np.load(path + ".structure.npy"))
     return NumericPose(
       trace, distance, hbonds, phi, psi, sequence, structure
     )
 
   def __getitem__(self, index):
-    if self.cache:
-      if self.exists[index]:
-        return self._load_impl(index)
-      else:
-        result = self._get_impl(index)
-        self._dump_impl(result, index)
-        return result
-    else:
-      return self._get_impl(index)
+    index = self.good[index % self.sum]
+    return self._load_impl(index)
+    # if self.cache:
+    #   if self.exists[index]:
+    #     return self._load_impl(index)
+    #   else:
+    #     if os.path.isfile(self.data[index] + ".trace.npy"):
+    #       self.exists[index] = True
+    #       return self._load_impl(index)
+    #     result = self._get_impl(index)
+    #     self._dump_impl(result, index)
+    #     return result
+    # else:
+    #   return self._get_impl(index)
 
 class PDBSimpleDistogram(PDBNumeric):
   def __init__(self, path, size=64, mode='cb', cache=True):
@@ -167,6 +182,25 @@ class PDBSimpleDistogram(PDBNumeric):
       distance_crop
     )
 
+class PDBFragment(PDBNumeric):
+  def __init__(self, path, size=64, **kwargs):
+    super(PDBFragment, self).__init__(path, **kwargs)
+    self.size = size
+
+  def __getitem__(self, index):
+    _, _, _, phi, psi, sequence, structure = \
+      super(PDBFragment, self).__getitem__(index)
+    while len(phi) <= self.size:
+      print("are we looping?")
+      _, _, _, phi, psi, sequence, structure = \
+        super(PDBFragment, self).__getitem__(index + 1)
+    offset = random.randint(0, len(phi) - self.size)
+    phi = phi[offset:offset + self.size]
+    psi = psi[offset:offset + self.size]
+    sequence = sequence[offset:offset + self.size]
+    structure = structure[offset:offset + self.size]
+    return phi, psi, sequence, structure
+
 class PDBBaseline(Dataset):
   def __init__(self, data, neighbours=20):
     # TODO : rotation normalise every neigbourhood.
@@ -175,20 +209,13 @@ class PDBBaseline(Dataset):
     self.features = []
     self.target = []
 
-    code = "ACDEFGHIKLMNPQRSTVWY"
-
     for trace, _, phi, psi, sequence in data:
       tree = cKDTree(trace)
       _, indices = tree.query(trace, k=neighbours)
       features = torch.cat((trace, phi, psi), dim=1)
       neighbour_features = features[indices]
       self.features.append(neighbour_features)
-      target = []
-      for residue in sequence:
-        target.append(code.index(residue))
-      self.target.append(
-        torch.Tensor(target).view(len(target), 1)
-      )
+      self.target.append(one_hot_aa(sequence))
     self.features = torch.cat(self.features, dim=0)
     self.target = torch.cat(self.target, dim=0)
 
@@ -212,7 +239,6 @@ class PDBKNN(PDBNumeric):
       super(PDBKNN, self).__getitem__(index)
     residue = self._sample_residue(sequence)
     return residue
-    # TODO
 
 class ProteinData():
   def __init__(self, folder):
