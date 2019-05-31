@@ -91,6 +91,6 @@ def process_fasta(path, msa_args=None, couple_args=None):
   convert_psi_file(path + ".psi")
   run_couple(path + ".psi", **couple_args)
 
-  fi, fij, h, J = parse_coupling_parameters(path + ".phi.params")
+  fi, fij, h, J = parse_coupling_parameters(path + ".psi.params")
 
   return fi, fij, h, J
