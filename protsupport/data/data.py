@@ -47,6 +47,10 @@ class PDBData(Dataset):
 NumericPose = namedtuple("NumericPose", [
   "backbone_trace", "distance", "hbonds", "phi", "psi", "sequence", "structure"
 ])
+MSAPose = namedtuple("MSAPose", [
+  "backbone_trace", "distance", "hbonds", "phi",
+  "psi", "sequence", "structure", "profile", "coupling"
+])
 
 class PDBNumeric(PDBData):
   def __init__(self, path, mode="ca", cache=True, transform=lambda x:x):
@@ -151,6 +155,54 @@ class PDBNumeric(PDBData):
     # else:
     #   return self._get_impl(index)
 
+class PDBNumericMSA(PDBNumeric):
+  def __init__(self, path, mode="ca", cache=True, transform=lambda x:x):
+    PDBNumeric.__init__(self, path, mode=mode, cache=cache, transform=transform)
+    self.profile_path = path + "/msa-profiles/"
+    self.coupling_path = path + "/dca-couplings/"
+    self.profiles = [
+      os.path.join(
+        self.profile_path,
+        path.split("/")[-1].split(".")[0].lower() + ".fi.npz")
+      for path in self.data
+    ]
+    self.couplings = [
+      os.path.join(
+        self.coupling_path,
+        path.split("/")[-1].split(".")[0].lower() + ".Jij.npz")
+      for path in self.data
+    ]
+    new_good = []
+    for idx in self.good:
+      if not os.path.isfile(self.profiles[idx]):
+        continue
+      if not os.path.isfile(self.couplings[idx]):
+        continue
+      new_good.append(idx)
+    self.good = new_good
+
+  def load_coupling(self, coupling, length):
+    raw_data = np.load(coupling)
+    result = torch.zeros(21, 21, length, length)
+    count = 1
+    for idx in range(length):
+      for idy in range(idx + 1, length):
+        value = raw_data[:, :, idx * length - count + idy - idx - 1]
+        result[:, :, idx, idy] = value
+        result[:, :, idy, idx] = value.T
+      count += idx
+    return result
+
+  def load_profile(self, profile):
+    return torch.Tensor(np.load(coupling))
+
+  def __getitem__(self, index):
+    index = self.good[index % self.sum]
+    base_result = self._load_impl(index)
+    profile = self.load_profile(self.profile[index])
+    coupling = self.load_coupling(self.coupling[index], profile.size(1))
+    return MSAPose(*base_result, profile, coupling)
+
 class PDBSimpleDistogram(PDBNumeric):
   def __init__(self, path, size=64, mode='cb', cache=True):
     super(PDBSimpleDistogram, self).__init__(
@@ -180,6 +232,46 @@ class PDBSimpleDistogram(PDBNumeric):
       (phi_crop_x, phi_crop_y),
       (psi_crop_x, psi_crop_y),
       distance_crop
+    )
+
+class PDBDistogram(PDBNumericMSA):
+  def __init__(self, path, size=64, mode='cb', cache=True):
+    super(PDBDistogram, self).__init__(
+      path, mode=mode, cache=cache, transform=lambda x:x
+    )
+    self.size = size
+
+  def __getitem__(self, index):
+    _, distance, _, phi, psi, sequence, structure, profile, coupling = super().__getitem__(index)
+    x_offset = random.randint(0, len(phi) - self.size)
+    y_offset = random.randint(0, len(phi) - self.size)
+    distance_crop = distance[
+      x_offset:x_offset + self.size,
+      y_offset:y_offset + self.size
+    ]
+    coupling_crop = coupling[
+      :, :,
+      x_offset:x_offset + self.size,
+      y_offset:y_offset + self.size
+    ].reshape(-1, self.size, self.size)
+    phi_crop_x = phi[x_offset:x_offset + self.size]
+    phi_crop_y = phi[y_offset:y_offset + self.size]
+    psi_crop_x = psi[x_offset:x_offset + self.size]
+    psi_crop_y = psi[y_offset:y_offset + self.size]
+    structure_crop_x = structure[x_offset:x_offset + self.size]
+    structure_crop_y = structure[y_offset:y_offset + self.size]
+    sequence_crop_x = sequence[x_offset:x_offset + self.size]
+    sequence_crop_y = sequence[y_offset:y_offset + self.size]
+    profile_crop_x = profile[x_offset:x_offset + self.size]
+    profile_crop_y = profile[y_offset:y_offset + self.size]
+    return (
+      (sequence_crop_x, sequence_crop_y),
+      (profile_crop_x, profile_crop_y),
+      (structure_crop_x, structure_crop_y),
+      (phi_crop_x, phi_crop_y),
+      (psi_crop_x, psi_crop_y),
+      distance_crop,
+      coupling_crop
     )
 
 class PDBFragment(PDBNumeric):
