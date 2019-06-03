@@ -11,8 +11,9 @@ from torch.nn import functional as func
 def run_msa(path, db_path="", blits_args=""):
   return subprocess.run(f"hhblits {blits_args} -i {path} -opsi {path + '.psi'} -d {db_path}", shell=True)
 
-def run_couple(path, plmc_args=""):
-  return subprocess.run(f"plmc -o {path}.params {plmc_args} {path}", shell=True)
+def run_couple(path, focus=None, plmc_args=""):
+  focus_arg = f"-g -f {focus}" if focus else ""
+  return subprocess.run(f"plmc -o {path}.params {plmc_args} {focus_arg} {path}", shell=True)
 
 def convert_psi_file(path):
   new_repr = []
@@ -25,6 +26,7 @@ def convert_psi_file(path):
   with open(path, "w") as psi:
     for line in new_repr:
       psi.write(line)
+  return new_repr[0].split("\n")[1:]
 
 def parse_coupling_parameters(path):
   precision = "float32"
@@ -88,8 +90,8 @@ def process_fasta(path, msa_args=None, couple_args=None):
   if couple_args is None:
     couple_args = {}
   run_msa(path, **msa_args)
-  convert_psi_file(path + ".psi")
-  run_couple(path + ".psi", **couple_args)
+  focus = convert_psi_file(path + ".psi")
+  run_couple(path + ".psi", focus=focus, **couple_args)
 
   fi, fij, h, J = parse_coupling_parameters(path + ".psi.params")
 
