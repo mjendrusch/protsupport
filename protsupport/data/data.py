@@ -158,18 +158,20 @@ class PDBNumeric(PDBData):
 class PDBNumericMSA(PDBNumeric):
   def __init__(self, path, mode="ca", cache=True, transform=lambda x:x):
     PDBNumeric.__init__(self, path, mode=mode, cache=cache, transform=transform)
-    self.profile_path = path + "/msa-profiles/"
-    self.coupling_path = path + "/dca-couplings/"
+    base_path = "/".join(path.split("/")[:-2])
+    self.profile_path = base_path + "/msa-profiles/"
+    self.coupling_path = base_path + "/dca-couplings/"
+    # FIXME: handle chains correctly
     self.profiles = [
       os.path.join(
         self.profile_path,
-        path.split("/")[-1].split(".")[0].lower() + ".fi.npz")
+        path.split("/")[-1].split(".")[0].lower() + "_A" + ".fi.npy")
       for path in self.data
     ]
     self.couplings = [
       os.path.join(
         self.coupling_path,
-        path.split("/")[-1].split(".")[0].lower() + ".Jij.npz")
+        path.split("/")[-1].split(".")[0].lower() + "_A" + ".Jij.npz")
       for path in self.data
     ]
     new_good = []
@@ -182,25 +184,27 @@ class PDBNumericMSA(PDBNumeric):
     self.good = new_good
 
   def load_coupling(self, coupling, length):
-    raw_data = np.load(coupling)
+    raw_data = torch.Tensor(np.load(coupling)["arr_0"])
     result = torch.zeros(21, 21, length, length)
-    count = 1
+    count = 0
     for idx in range(length):
       for idy in range(idx + 1, length):
-        value = raw_data[:, :, idx * length - count + idy - idx - 1]
+        value = raw_data[count]
         result[:, :, idx, idy] = value
-        result[:, :, idy, idx] = value.T
-      count += idx
+        result[:, :, idy, idx] = torch.transpose(value, 0, 1)
+        count += 1
     return result
 
   def load_profile(self, profile):
-    return torch.Tensor(np.load(coupling))
+    tensor = torch.Tensor(np.load(profile))
+    tensor = torch.transpose(tensor, 0, 1)
+    return tensor
 
   def __getitem__(self, index):
     index = self.good[index % self.sum]
     base_result = self._load_impl(index)
-    profile = self.load_profile(self.profile[index])
-    coupling = self.load_coupling(self.coupling[index], profile.size(1))
+    profile = self.load_profile(self.profiles[index])
+    coupling = self.load_coupling(self.couplings[index], profile.size(1))
     return MSAPose(*base_result, profile, coupling)
 
 class PDBSimpleDistogram(PDBNumeric):
