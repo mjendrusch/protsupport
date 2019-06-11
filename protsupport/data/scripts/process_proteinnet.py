@@ -52,13 +52,14 @@ def compute_inputs(primary, evolutionary, secondary, tertiary, mask):
   primary = np.array(primary)
   evolutionary = np.array(evolutionary)
   secondary = np.array(secondary)
-  tertiary = np.array(tertiary).T.reshape(-1, 3)
+  tertiary = np.array(tertiary).T
+  # print(np.linalg.norm(tertiary[0, :] - tertiary[1, :]))
   mask = np.array(mask)
   return primary, evolutionary, secondary, tertiary, mask
 
 def compute_dihedrals(tertiary, mask):
-  angles = np.zeros(len(tertiary) * 3, dtype=np.float32)
-  angle_mask = np.zeros(len(tertiary) * 3, dtype=np.bool)
+  angles = np.zeros(len(tertiary), dtype=np.float32)
+  angle_mask = np.zeros(len(tertiary), dtype=np.bool)
   for idx, pos in enumerate(tertiary):
     valid = idx // 3 < len(mask) - 1 and mask[idx // 3] and mask[idx // 3 + 1]
     if valid:
@@ -69,21 +70,20 @@ def compute_dihedrals(tertiary, mask):
         angle = _compute_dihedral_angle(*vectors)
         angles[idx + 1] = angle
       valid = valid and not some_equal
-    angle_mask[idx + 1] = valid
+      angle_mask[idx + 1] = valid
   angles = angles.reshape(3, -1)
   angle_mask = angle_mask.reshape(3, -1)
   return angles, angle_mask
 
 def _compute_rotation(vector, axis, angle):
   axis = axis / np.linalg.norm(axis)
-  cross = np.cross(axis, axis)
   matrix = np.array([
-    [0, -cross[2], cross[1]],
-    [0, 0, -cross[0]],
+    [0, -axis[2], axis[1]],
+    [0, 0, -axis[0]],
     [0, 0, 0]
   ])
   matrix = matrix - matrix.T
-  rot = np.eye(3), np.sin(angle) * matrix + (1 - np.cos(angle)) * (matrix @ matrix)
+  rot = np.eye(3) + np.sin(angle) * matrix + (1 - np.cos(angle)) * (matrix @ matrix)
   return rot @ vector
 
 def compute_cb(tertiary, mask):
@@ -91,14 +91,14 @@ def compute_cb(tertiary, mask):
   extended_tertiary = np.zeros((tertiary.shape[0], 4, 3))
   for idx, (n, ca, co) in enumerate(tertiary):
     if (n == ca).all():
-      mask[idx // 3] = False
-    if mask[idx // 3]:
+      mask[idx] = False
+    if mask[idx]:
       axis = ca - n
       offset = co - ca
       offset_r = _compute_rotation(
         offset, axis, (4 * np.pi) / 3
       )
-      cb = ca + offset
+      cb = ca + offset_r
       extended_tertiary[idx] = np.array([n, ca, cb, co])
   return extended_tertiary
 
