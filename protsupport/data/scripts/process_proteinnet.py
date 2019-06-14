@@ -1,4 +1,5 @@
 import numpy as np
+from protsupport.utils.geometry import compute_dihedral_angle, compute_rotation
 
 AA_ID_DICT = {'A': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5, 'G': 6, 'H': 7, 'I': 8, 'K': 9,
               'L': 10, 'M': 11, 'N': 12, 'P': 13, 'Q': 14, 'R': 15, 'S': 16, 'T': 17,
@@ -42,12 +43,6 @@ def read_protein_from_file(file_pointer):
     elif next_line == '':
       return None
 
-def _compute_dihedral_angle(a, b, c):
-  c1 = np.cross(a, b)
-  c2 = np.cross(b, c)
-  b0 = b / np.linalg.norm(b)
-  return np.arctan2(np.cross(c1, c2).dot(b0), c1.dot(c2))
-
 def compute_inputs(primary, evolutionary, secondary, tertiary, mask):
   primary = np.array(primary)
   evolutionary = np.array(evolutionary)
@@ -67,24 +62,13 @@ def compute_dihedrals(tertiary, mask):
       vnorm = np.linalg.norm(vectors, axis=1)
       some_equal = (vnorm == 0.0).any()
       if not some_equal:
-        angle = _compute_dihedral_angle(*vectors)
+        angle = compute_dihedral_angle(*vectors)
         angles[idx + 1] = angle
       valid = valid and not some_equal
       angle_mask[idx + 1] = valid
   angles = angles.reshape(3, -1)
   angle_mask = angle_mask.reshape(3, -1)
   return angles, angle_mask
-
-def _compute_rotation(vector, axis, angle):
-  axis = axis / np.linalg.norm(axis)
-  matrix = np.array([
-    [0, -axis[2], axis[1]],
-    [0, 0, -axis[0]],
-    [0, 0, 0]
-  ])
-  matrix = matrix - matrix.T
-  rot = np.eye(3) + np.sin(angle) * matrix + (1 - np.cos(angle)) * (matrix @ matrix)
-  return rot @ vector
 
 def compute_cb(tertiary, mask):
   tertiary = tertiary.reshape(-1, 3, 3)
@@ -95,7 +79,7 @@ def compute_cb(tertiary, mask):
     if mask[idx]:
       axis = ca - n
       offset = co - ca
-      offset_r = _compute_rotation(
+      offset_r = compute_rotation(
         offset, axis, (4 * np.pi) / 3
       )
       cb = ca + offset_r

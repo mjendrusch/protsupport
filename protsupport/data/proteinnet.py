@@ -1,7 +1,10 @@
 import random
 import numpy as np
 import torch
+from scipy.spatial import cKDTree
 from torch.utils.data import Dataset
+
+from protsupport.utils.geometry import compute_rotation_matrix, vector_angle
 
 class ProteinNet(Dataset):
   def __init__(self, path):
@@ -108,3 +111,87 @@ class DistogramSlice(DistogramNet):
       "mask": data["mask"][:, x_window, y_window],
       "anglemask": (data["anglemask"][:, x_window], data["anglemask"][:, y_window])
     }
+
+class ProteinNetKNN(ProteinNet):
+  def __init__(self, path, num_neighbours=20, n_jobs=1):
+    super(ProteinNetKNN, self).__init__(path)
+    self.num_neighbours = num_neighbours
+    self.n_jobs = n_jobs
+    primary = []
+    evolutionary = []
+    tertiary = []
+    deltas = []
+    indices = []
+    for idx in range(ProteinNet.__len__(self)):
+      data = ProteinNet.__getitem__(self, idx)
+      if data["mask"].sum() < num_neighbours:
+        continue
+      p, e, t, d, i = self._get_knn_data(data)
+      primary.append(p)
+      evolutionary.append(e)
+      tertiary.append(t)
+      deltas.append(d)
+      indices.append(i)
+    self.pris = torch.cat(primary, dim=0)
+    self.evos = torch.cat(evolutionary, dim=0)
+    self.ters = torch.cat(tertiary, dim=0)
+    self.dels = torch.cat(deltas, dim=0)
+    self.inds = torch.cat(indices, dim=0)
+
+  def __len__(self):
+    return self.pris.size(0)
+
+  def __getitem__(self, index):
+    return {
+      "primary": self.pris[index],
+      "evolutionary": self.evos[index],
+      "tertiary": self.ters[index],
+      "deltas": self.dels[index],
+      "indices": self.inds[index]
+    }
+
+  def _get_knn_data(self, data):
+    mask = data["mask"]
+    keep = mask.nonzero().view(-1)
+
+    tertiary = data["tertiary"][:, :, keep]
+    primary = data["primary"][keep]
+    evolutionary = data["evolutionary"][:, keep]
+    positions = tertiary[1, :, :]
+    pt = positions.transpose(1, 0)
+    tree = cKDTree(pt)
+    deltas, indices = tree.query(pt, k=self.num_neighbours, n_jobs=self.n_jobs)
+    indices = torch.tensor(indices, dtype=torch.long, requires_grad=False)
+    deltas = torch.tensor(deltas, dtype=torch.float, requires_grad=False)
+    neighbour_primary = primary[indices.view(-1)].view(1, *indices.shape)
+    neighbour_primary = neighbour_primary.permute(1, 0, 2)
+    neighbour_evolutionary = evolutionary[:, indices.view(-1)].view(
+      evolutionary.size(0), *indices.shape
+    )
+    neighbour_evolutionary = neighbour_evolutionary.permute(1, 0, 2)
+    neighbour_tertiary = tertiary[:, :, indices.view(-1)].view(
+      tertiary.size(0), tertiary.size(1), *indices.shape
+    )
+    neighbour_tertiary = neighbour_tertiary.permute(2, 0, 1, 3)
+    neighbour_tertiary = self._rectify_tertiary(neighbour_tertiary)
+    return (
+      neighbour_primary,
+      neighbour_evolutionary,
+      neighbour_tertiary,
+      deltas,
+      indices
+    )
+
+  def _rectify_tertiary(self, tertiary):
+    ter_np = tertiary.numpy()
+    pivot = np.array([1, 0, 0])
+    n_pos = ter_np[:, 0:1, :, 0:1]
+    ca_pos = ter_np[:, 1:2, :, 0:1]
+    ter_np -= n_pos
+    ca_pos = ca_pos[:, 0, :, 0]
+    for idx, position in enumerate(ca_pos):
+      angle = vector_angle(position, pivot)
+      axis = np.cross(position, pivot)
+      rot = compute_rotation_matrix(position, axis, angle)
+      ter_np[idx, :, :] = rot @ ter_np[idx, :, :]
+    return tertiary
