@@ -97,7 +97,7 @@ def protein_to_numpy(file_pointer):
   tertiary = data["tertiary"]
   primary, evolutionary, secondary, tertiary, mask = \
     compute_inputs(primary, evolutionary, [], tertiary, mask)
-  
+
   extended_tertiary = compute_cb(tertiary, mask)
   angles, angle_mask = compute_dihedrals(tertiary, mask)
   tertiary = np.transpose(extended_tertiary, (1, 2, 0))
@@ -105,12 +105,12 @@ def protein_to_numpy(file_pointer):
 
 def proteins_to_numpy(path, file_pointer):
   all_data = []
-  
+
   prot = protein_to_numpy(file_pointer)
   while prot is not None:
     all_data.append(prot)
     prot = protein_to_numpy(file_pointer)
-  
+
   masks = []
   pris = []
   evos = []

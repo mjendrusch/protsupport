@@ -177,6 +177,7 @@ class ProteinNetKNN(ProteinNet):
     tertiary = tertiary - tertiary[0:1, :, 0:1]
     tertiary = rot @ tertiary
     return {
+      "indices": inds,
       "primary": primary,
       "evolutionary": evolutionary,
       "tertiary": tertiary
@@ -201,19 +202,33 @@ class ProteinNetKNN(ProteinNet):
     return keep, indices, rotations
 
   def _rectify_tertiary(self, tertiary):
-    ter_np = tertiary.numpy()
-    pivot = np.array([1, 0, 0])
+    ter_np = tertiary.numpy().copy()
     n_pos = ter_np[:, 0:1, :, 0:1]
-    ca_pos = ter_np[:, 1:2, :, 0:1]
+    ca_pos = ter_np[:, 1, :, 0]
     ter_np -= n_pos
-    ca_pos = ca_pos[:, 0, :, 0]
     rotations = np.zeros((ca_pos.shape[0], 3, 3))
     for idx, position in enumerate(ca_pos):
+      pivot = np.array([1, 0, 0])
       angle = vector_angle(position, pivot)
       axis = np.cross(position, pivot)
-      if np.linalg.norm(axis) != 0.0:
-        rot = compute_rotation_matrix(position, axis, angle)
-        rotations[idx] = rot
-        ter_np[idx, :, :] = rot @ ter_np[idx, :, :]
+      rot = np.eye(3)
+      shifted = ter_np[idx].copy()
+
+      if np.linalg.norm(axis) != 0.0 and angle - angle == 0:
+        rot = compute_rotation_matrix(axis, angle)
+        shifted = rot @ shifted
+
+      axis = pivot
+      pivot = np.array([0, 0, 1])
+      cb_rot = np.eye(3)
+      cb_position = shifted[2, :, 0].copy()
+      cb_position[0] = 0.0
+      angle = vector_angle(cb_position, pivot)
+
+      if np.linalg.norm(axis) != 0.0 and angle - angle == 0:
+        cb_rot = compute_rotation_matrix(axis, angle)
+        shifted = cb_rot @ shifted
+
+      rotations[idx] = cb_rot @ rot
 
     return rotations

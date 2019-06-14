@@ -6,7 +6,7 @@ def compute_dihedral_angle(a, b, c):
   b0 = b / np.linalg.norm(b)
   return np.arctan2(np.cross(c1, c2).dot(b0), c1.dot(c2))
 
-def compute_rotation_matrix(vector, axis, angle):
+def compute_rotation_matrix(axis, angle):
   axis = axis / np.linalg.norm(axis)
   matrix = np.array([
     [0, -axis[2], axis[1]],
@@ -18,7 +18,7 @@ def compute_rotation_matrix(vector, axis, angle):
   return rot
 
 def compute_rotation(vector, axis, angle):
-  rot = compute_rotation_matrix(vector, axis, angle)
+  rot = compute_rotation_matrix(axis, angle)
   return rot @ vector
 
 def vector_angle(v1, v2):
