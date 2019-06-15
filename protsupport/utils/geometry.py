@@ -74,3 +74,37 @@ def vector_angle(v1, v2):
   dot = np.dot(v1, v2)
   cross = np.linalg.norm(np.cross(v1, v2))
   return np.arctan2(cross, dot)
+
+def orientation(positions):
+  u = positions[:, 1:] - positions[:, :-1]
+  u = u / np.linalg.norm(u, axis=0)
+  b = u[:, :-1] - u[:, 1:]
+  b = b / np.linalg.norm(b, axis=0)
+  n = np.cross(u[:, :-1], u[:, 1:])
+  n = n / np.linalg.norm(n, axis=0)
+  bxn = np.cross(b, n)
+
+  b_edge = np.array([1, 0, 0]).reshape(3, 1)
+  n_edge = np.array([0, 1, 0]).reshape(3, 1)
+  bxn_edge = np.array([0, 0, 1]).reshape(3, 1)
+  edge = np.concatenate((b_edge, n_edge, bxn_edge), axis=0)
+
+  result = np.concatenate((b, n, bxn), axis=0)
+  result = np.concatenate((edge, result, edge), axis=1)
+  result = result.reshape(3, 3, -1)
+  return result
+
+def matrix_to_quaternion(matrix):
+  w = np.sqrt(1.0 + matrix[0, 0] + matrix[1, 1] + matrix[2, 2]) / 2.0
+  w4 = (4.0 * w)
+  x = (matrix[2, 1] - matrix[1, 2]) / w4
+  y = (matrix[0, 2] - matrix[2, 0]) / w4
+  z = (matrix[1, 0] - matrix[0, 1]) / w4
+  return np.array([w, x, y, z])
+
+def relative_orientation(x, y, x_o, y_o):
+  offset = y - x
+  distance = np.linalg.norm(offset, axis=0)
+  direction = x_o.T @ (offset / distance)
+  rotation = matrix_to_quaternion(x_o.T @ y_o)
+  return distance, direction, rotation
