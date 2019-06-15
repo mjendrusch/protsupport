@@ -4,7 +4,7 @@ from scipy.spatial import cKDTree
 
 from pyrosetta import *
 
-from protsupport.tools.preprocess import strip_ligands, clean_pdb_gz
+from protsupport.utls.preprocess import strip_ligands, clean_pdb_gz
 
 def get_distance_matrix(pose):
   result = np.zeros((pose.total_residue(), pose.total_residue()))

@@ -130,6 +130,7 @@ class ProteinNetKNN(ProteinNet):
       self.pris = self.pris[self.keeps]
       self.evos = self.evos[:, self.keeps]
       self.ters = self.ters[:, :, self.keeps]
+      self.angs = self.angs[:, self.keeps]
     else:
       keeps = []
       neighbour_indices = []
@@ -155,6 +156,7 @@ class ProteinNetKNN(ProteinNet):
       self.pris = self.pris[keeps]
       self.evos = self.evos[:, keeps]
       self.ters = self.ters[:, :, keeps]
+      self.angs = self.angs[:, keeps]
 
       if cache:
         np.savez_compressed(
@@ -173,14 +175,16 @@ class ProteinNetKNN(ProteinNet):
     rot = self.rots[index]
     primary = self.pris[inds]
     evolutionary = self.evos[:, inds]
-    tertiary = self.ters[:, :, inds]
+    tertiary = self.ters[:, :, inds].clone()
     tertiary = tertiary - tertiary[0:1, :, 0:1]
     tertiary = rot @ tertiary
+    angles = self.angs[:, inds]
     return {
       "indices": inds,
       "primary": primary,
       "evolutionary": evolutionary,
-      "tertiary": tertiary
+      "tertiary": tertiary,
+      "angles": angles
     }
 
   def _get_knn_data(self, data):
@@ -218,16 +222,19 @@ class ProteinNetKNN(ProteinNet):
         rot = compute_rotation_matrix(axis, angle)
         shifted = rot @ shifted
 
-      axis = pivot
       pivot = np.array([0, 0, 1])
       cb_rot = np.eye(3)
       cb_position = shifted[2, :, 0].copy()
       cb_position[0] = 0.0
       angle = vector_angle(cb_position, pivot)
+      axis = np.cross(cb_position, pivot)
 
       if np.linalg.norm(axis) != 0.0 and angle - angle == 0:
         cb_rot = compute_rotation_matrix(axis, angle)
         shifted = cb_rot @ shifted
+
+      if abs(shifted[2, 1, 0]) > 1e-4:
+        print(rot, shifted[:, :, 0])
 
       rotations[idx] = cb_rot @ rot
 
