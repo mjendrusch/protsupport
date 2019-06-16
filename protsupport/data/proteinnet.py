@@ -5,6 +5,8 @@ import torch
 from scipy.spatial import cKDTree
 from torch.utils.data import Dataset
 
+from torchsupport.modules.basic import one_hot_encode
+
 from protsupport.utils.geometry import compute_rotation_matrix, vector_angle
 
 class ProteinNet(Dataset):
@@ -46,6 +48,7 @@ class DistogramNet(ProteinNet):
     tertiary = data["tertiary"]
     cb = tertiary[2, :, :]
     distance = torch.norm(cb[:, None, :] - cb[:, :, None], 2, dim=0)
+    distance = torch.clamp(distance, 0, self.max_distance)
     distogram = (distance / self.max_distance * self.distance_bins).to(torch.long)
     return distogram[None]
 
@@ -60,12 +63,17 @@ class DistogramNet(ProteinNet):
     return torch.cat((px, py), dim=0)
 
   def getfeatures(self, data):
-    primary = data["primary"][None]
+    primary = data["primary"]
     evolutionary = data["evolutionary"]
-    position = torch.tensor(range(primary.size(1)), dtype=torch.float32).view(1, -1)
-    primary = self.tile(primary).to(torch.float)
+    position = torch.tensor(range(primary.size(0)), dtype=torch.float32).view(1, -1)
+    primary_hot = one_hot_encode(primary, list(range(1, 21)))
+    primary = self.tile(primary_hot).to(torch.float)
     evolutionary = self.tile(evolutionary)
     position = self.tile(position).to(torch.float)
+    position = torch.cat((
+      torch.sin(position[:1] - position[1:] / 250 * np.pi),
+      torch.cos(position[:1] - position[1:] / 250 * np.pi)
+    ), dim=0)
     return torch.cat((position, primary, evolutionary), dim=0)
 
   def getmasks(self, data):
@@ -99,8 +107,11 @@ class DistogramSlice(DistogramNet):
     self.size = size
 
   def __getitem__(self, index):
-    data = super().__getitem__(index)
+    data = DistogramNet.__getitem__(self, index)
     length = data["features"].size(-1)
+    while length < self.size + 1:
+      data = DistogramNet.__getitem__(self, random.randrange(0, self.__len__()))
+      length = data["features"].size(-1)
     offset_x = random.randrange(0, length - self.size)
     offset_y = random.randrange(0, length - self.size)
     x_window = slice(offset_x, offset_x + self.size)
