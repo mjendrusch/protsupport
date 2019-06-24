@@ -1,5 +1,7 @@
 import sys
 
+from matplotlib import pyplot as plt
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -8,15 +10,34 @@ from torchsupport.training.training import SupervisedTraining
 from protsupport.data.proteinnet import ProteinNetKNN
 from protsupport.modules.baseline import Baseline
 
+def valid_callback(training, data, predictions):
+  inputs, labels = data
+  confusion = torch.zeros(20, 20)
+  for label, prediction in zip(labels, predictions[0][0]):
+    pred = prediction.argmax(dim=0)
+    confusion[label, pred] += 1
+  fig, ax = plt.subplots()
+  ax.imshow(confusion / confusion.sum(dim=1, keepdim=True), cmap="Reds")
+  training.writer.add_figure("confusion", fig, training.step_id)
+
 class SupervisedKNN(ProteinNetKNN):
+  def __init__(self, path, num_neighbours=20, n_jobs=1, cache=True):
+    super().__init__(path, num_neighbours=num_neighbours, n_jobs=n_jobs, cache=cache)
+    self.aa_indices = [
+      (self.pris - 1 == idx).nonzero().view(-1)
+      for idx in range(20)
+    ]
+
   def __getitem__(self, index):
-    data = super().__getitem__(index)
+    aa = random.randrange(0, 20)
+    aa_range = self.aa_indices[aa]
+    aa_index = aa_range[index % aa_range.size(0)]
+    data = super().__getitem__(aa_index)
     structure = data["tertiary"]
     structure = structure.view(-1, structure.size(-1)) / 1000
     angles = data["angles"]
     sin = torch.sin(angles)
     cos = torch.cos(angles)
-    # positional = data["indices"][None].to(torch.float)
     structure_features = torch.cat((sin, cos, structure), dim=0)
 
     primary = data["primary"][0] - 1
@@ -38,11 +59,11 @@ if __name__ == "__main__":
   training = SupervisedTraining(
     net, data, valid_data,
     [DebugLoss()],
-    batch_size=512,
-    max_epochs=50,
-    optimizer=lambda x: torch.optim.Adam(x, lr=1e-2),
+    batch_size=1024,
+    max_epochs=1000,
+    optimizer=lambda x: torch.optim.Adam(x, lr=1e-3),
     device="cuda:0",
     network_name="baseline",
-    valid_callback=lambda x, y, z: x
+    valid_callback=valid_callback
   )
   final_net = training.train()
