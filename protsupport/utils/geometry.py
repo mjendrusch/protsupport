@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 def compute_dihedral_angle(a, b, c):
   c1 = np.cross(a, b)
@@ -77,12 +78,12 @@ def vector_angle(v1, v2):
 
 def orientation(positions):
   u = positions[:, 1:] - positions[:, :-1]
-  u = u / np.linalg.norm(u, axis=0)
+  u = u / (np.linalg.norm(u, axis=0) + 1e-6)
   b = u[:, :-1] - u[:, 1:]
-  b = b / np.linalg.norm(b, axis=0)
-  n = np.cross(u[:, :-1], u[:, 1:])
-  n = n / np.linalg.norm(n, axis=0)
-  bxn = np.cross(b, n)
+  b = b / (np.linalg.norm(b, axis=0) + 1e-6)
+  n = np.cross(u[:, :-1].T, u[:, 1:].T).T
+  n = n / (np.linalg.norm(n, axis=0) + 1e-6)
+  bxn = np.cross(b.T, n.T).T
 
   b_edge = np.array([1, 0, 0]).reshape(3, 1)
   n_edge = np.array([0, 1, 0]).reshape(3, 1)
@@ -92,19 +93,41 @@ def orientation(positions):
   result = np.concatenate((b, n, bxn), axis=0)
   result = np.concatenate((edge, result, edge), axis=1)
   result = result.reshape(3, 3, -1)
+  if np.isnan(result).any(): print("bad result")
+
   return result
 
 def matrix_to_quaternion(matrix):
-  w = np.sqrt(1.0 + matrix[0, 0] + matrix[1, 1] + matrix[2, 2]) / 2.0
-  w4 = (4.0 * w)
-  x = (matrix[2, 1] - matrix[1, 2]) / w4
-  y = (matrix[0, 2] - matrix[2, 0]) / w4
-  z = (matrix[1, 0] - matrix[0, 1]) / w4
-  return np.array([w, x, y, z])
+  if isinstance(matrix, torch.Tensor):
+    w = torch.sqrt(1.0 + matrix[:, 0, 0] + matrix[:, 1, 1] + matrix[:, 2, 2]) / 2.0
+    w4 = (4.0 * w)
+    x = (matrix[:, 2, 1] - matrix[:, 1, 2]) / (w4 + 1e-6)
+    y = (matrix[:, 0, 2] - matrix[:, 2, 0]) / (w4 + 1e-6)
+    z = (matrix[:, 1, 0] - matrix[:, 0, 1]) / (w4 + 1e-6)
+    return torch.cat([w[:, None], x[:, None], y[:, None], z[:, None]], dim=1)
+  else:
+    w = np.sqrt(1.0 + matrix[0, 0] + matrix[1, 1] + matrix[2, 2]) / 2.0
+    w4 = (4.0 * w)
+    x = (matrix[2, 1] - matrix[1, 2]) / w4
+    y = (matrix[0, 2] - matrix[2, 0]) / w4
+    z = (matrix[1, 0] - matrix[0, 1]) / w4
+    return np.array([w, x, y, z])
 
 def relative_orientation(x, y, x_o, y_o):
-  offset = y - x
-  distance = np.linalg.norm(offset, axis=0)
-  direction = x_o.T @ (offset / distance)
-  rotation = matrix_to_quaternion(x_o.T @ y_o)
-  return distance, direction, rotation
+  if isinstance(x, torch.Tensor):
+    offset = y - x[None]
+    distance = torch.norm(offset, dim=1, keepdim=True)
+    direction = (offset / (distance + 1e-6)) @ x_o
+    direction[(distance == 0).view(-1)] = 0
+    rotation = matrix_to_quaternion(x_o @ y_o)
+    if torch.isnan(distance).any(): print("bad distance")
+    if torch.isnan(direction).any(): print("bad direction")
+    if torch.isnan(rotation).any(): print("bad rotation")
+    return distance, direction, rotation
+  else:
+    offset = y - x
+    distance = np.linalg.norm(offset, axis=0)
+    direction = x_o.T @ (offset / distance)
+    direction[:, distance == 0.0] = 0
+    rotation = matrix_to_quaternion(x_o.T @ y_o)
+    return distance, direction, rotation
