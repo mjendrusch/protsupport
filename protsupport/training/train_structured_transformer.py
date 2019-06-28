@@ -86,15 +86,15 @@ class DebugLoss(nn.Module):
 if __name__ == "__main__":
   data = TransformerNet(sys.argv[1], num_neighbours=15)
   valid_data = TransformerNet(sys.argv[2], num_neighbours=15)
-  net = nn.DataParallel(StructuredTransformer(
+  net = StructuredTransformer(
     6, 20, 128, 10, 20,
     attention_size=128, heads=8,
     mlp_depth=2, depth=5, batch_norm=True
-  ))
+  )
   training = SupervisedTraining(
     net, data, valid_data,
     [DebugLoss()],
-    batch_size=16,
+    batch_size=8,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
     device="cuda:0",
