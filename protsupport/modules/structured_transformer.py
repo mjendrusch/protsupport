@@ -29,8 +29,8 @@ class RelativeStructure(ts.PairwiseData):
     x_i, y_i = target[-1], source[:, -1]
 
     distance, direction, rotation = relative_orientation(x, y, x_o, y_o)
-    distance_sin = torch.sin(x_i - y_i)[:, None]
-    distance_cos = torch.cos(x_i - y_i)[:, None]
+    distance_sin = torch.sin((x_i - y_i) / 10)[:, None]
+    distance_cos = torch.cos((x_i - y_i) / 10)[:, None]
     return torch.cat((
       gaussian_rbf(distance, *self.rbf),
       direction, rotation, distance_sin, distance_cos
@@ -40,18 +40,15 @@ class MaskedStructure(OrientationStructure):
   def __init__(self, structure, distances,
                sequence, encoder_features):
     super().__init__(structure, distances)
-    self.sequence = one_hot_encode(
-      sequence, list(range(20))
-    ).transpose(0, 1).to(sequence.device)
     self.encoder_data = encoder_features[self.connections]
     self.index = torch.tensor(list(range(self.connections.size(0))), dtype=torch.long)
     self.index = self.index.view(-1, 1).to(self.encoder_data.device)
     self.pre = (self.connections < self.index).unsqueeze(-1)
     self.post = 1 - self.pre
     self.encoder_data[self.pre.expand_as(self.encoder_data)] = 0
-    self.sequence = self.sequence[self.connections]
+    self.sequence = sequence[self.connections]
     self.sequence[self.post.expand_as(self.sequence)] = 0
-    self.sequence = self.sequence.to(torch.float)
+    # self.sequence = self.sequence.to(torch.float)
 
   def message(self, source, target):
     decoder_data = source[self.connections]
@@ -70,8 +67,11 @@ class StructuredTransformerEncoderBlock(nn.Module):
       size + distance_size, size, attention_size, query_size=size, heads=heads
     )
     self.local = MLP(
-      size, size, hidden_size=hidden_size,
-      depth=mlp_depth, batch_norm=batch_norm
+      size, size,
+      hidden_size=hidden_size,
+      depth=mlp_depth,
+      activation=activation,
+      batch_norm=False
     )
     self.activation = activation
     self.dropout = lambda x: x
@@ -79,16 +79,14 @@ class StructuredTransformerEncoderBlock(nn.Module):
       self.dropout = nn.Dropout(dropout, inplace=True)
     self.bn = lambda x: x
     self.local_bn = lambda x: x
-    self.attention_bn = lambda x: x
     if self.batch_norm:
-      self.bn = nn.BatchNorm1d(size)
-      self.local_bn = nn.BatchNorm1d(size)
-      self.attention_bn = nn.BatchNorm1d(size)
+      self.bn = nn.LayerNorm(size)
+      self.local_bn = nn.LayerNorm(size)
 
   def forward(self, features, structure):
     inputs = self.activation(self.bn(features))
-    local = self.activation(self.bn(self.local(inputs)))
-    attention = self.dropout(self.attention(local, local, structure))
+    local = self.activation(self.local_bn(self.local(inputs)))
+    attention = self.attention(local, local, structure)
     return features + attention
 
 class StructuredTransformerEncoder(nn.Module):
@@ -125,7 +123,8 @@ class StructuredTransformerDecoderBlock(nn.Module):
       size, size,
       hidden_size=hidden_size,
       depth=mlp_depth,
-      batch_norm=batch_norm
+      activation=activation,
+      batch_norm=False
     )
     self.activation = activation
     self.dropout = lambda x: x
@@ -133,15 +132,13 @@ class StructuredTransformerDecoderBlock(nn.Module):
       self.dropout = nn.Dropout(dropout, inplace=True)
     self.bn = lambda x: x
     self.local_bn = lambda x: x
-    self.attention_bn = lambda x: x
     if self.batch_norm:
-      self.bn = nn.BatchNorm1d(size)
-      self.local_bn = nn.BatchNorm1d(size)
-      self.attention_bn = nn.BatchNorm1d(size)
+      self.bn = nn.LayerNorm(size)
+      self.local_bn = nn.LayerNorm(size)
 
   def forward(self, features, structure):
     inputs = self.activation(self.bn(features))
-    local = self.activation(self.bn(self.local(inputs)))
+    local = self.activation(self.local_bn(self.local(inputs)))
     attention = self.dropout(self.attention(local, local, structure))
     return features + attention
 
@@ -187,7 +184,14 @@ class StructuredTransformer(nn.Module):
       depth=depth, mlp_depth=mlp_depth, activation=activation,
       batch_norm=batch_norm
     )
+    self.sequence_embedding = nn.Linear(out_size, sequence_size)
     self.rbf = (0, max_distance, distance_kernels)
+
+  def prepare_sequence(self, sequence):
+    sequence = one_hot_encode(
+      sequence, list(range(20))
+    ).transpose(0, 1).to(sequence.device)
+    return self.sequence_embedding(sequence)
 
   def forward(self, features, sequence, distances, structure):
     distance_data = RelativeStructure(structure, self.rbf)
@@ -196,6 +200,8 @@ class StructuredTransformer(nn.Module):
     )
     relative_structure = OrientationStructure(structure, relative_data)
     encoding = self.encoder(features, relative_structure)
+
+    sequence = self.prepare_sequence(sequence)
     masked_structure = MaskedStructure(
       structure, relative_data, sequence, encoding
     )

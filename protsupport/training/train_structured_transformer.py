@@ -11,6 +11,8 @@ from torchsupport.modules.basic import one_hot_encode
 
 from torchsupport.modules.structured import ConstantStructure, SubgraphStructure
 from torchsupport.data.collate import BatchFirst
+from torchsupport.modules.structured import PackedTensor
+from torchsupport.modules.structured.parallel import DataParallel as SDP
 
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation, relative_orientation
@@ -25,6 +27,8 @@ def valid_callback(training, data, predictions):
   fig, ax = plt.subplots()
   ax.imshow(confusion / confusion.sum(dim=1, keepdim=True), cmap="Reds")
   training.writer.add_figure("confusion", fig, training.step_id)
+  # for name, parameter in training.net.named_parameters():
+  #   training.writer.add_histogram(f"phist {name}", parameter.detach().cpu().numpy(), training.step_id)
 
 class TransformerNet(ProteinNetKNN):
   def __init__(self, path, num_neighbours=20, n_jobs=1, cache=True):
@@ -34,7 +38,7 @@ class TransformerNet(ProteinNetKNN):
       n_jobs=n_jobs, cache=cache
     )
     self.ors = torch.tensor(
-      orientation(self.ters[1].numpy() / 1000).transpose(2, 0, 1),
+      orientation(self.ters[1].numpy() / 100).transpose(2, 0, 1),
       dtype=torch.float
     )
 
@@ -47,7 +51,7 @@ class TransformerNet(ProteinNetKNN):
     orientation = self.ors[window, :, :].view(
       window.stop - window.start, -1
     )
-    distances = self.ters[1, :, window].transpose(0, 1) / 1000
+    distances = self.ters[1, :, window].transpose(0, 1) / 100
     indices = torch.tensor(
       range(window.start, window.stop),
       dtype=torch.float
@@ -64,13 +68,13 @@ class TransformerNet(ProteinNetKNN):
     angle_features = torch.cat((sin, cos), dim=1)
 
     inputs = (
-      BatchFirst(angle_features),
-      BatchFirst(primary),
-      BatchFirst(orientation),
+      PackedTensor(angle_features),
+      PackedTensor(primary),
+      PackedTensor(orientation),
       neighbours
     )
 
-    return inputs, BatchFirst(primary)
+    return inputs, PackedTensor(primary)
 
   def __len__(self):
     return ProteinNet.__len__(self)
@@ -83,18 +87,28 @@ class DebugLoss(nn.Module):
   def forward(self, inputs, targets):
     return self.loss(inputs, targets)
 
+class StructuredTransformerTraining(SupervisedTraining):
+  def each_step(self):
+    learning_rate = torch.pow(torch.tensor(128.0), -0.5)
+    step_num = torch.tensor(float(self.step_id + 1))
+    learning_rate *= min(
+      torch.pow(step_num, -0.5),
+      step_num * torch.pow(torch.tensor(4000.0), -1.5)
+    )
+    self.optimizer.param_groups[0]["lr"] = learning_rate
+
 if __name__ == "__main__":
   data = TransformerNet(sys.argv[1], num_neighbours=15)
   valid_data = TransformerNet(sys.argv[2], num_neighbours=15)
-  net = nn.DataParallel(StructuredTransformer(
-    6, 20, 128, 10, 20,
+  net = SDP(StructuredTransformer(
+    6, 20, 128, 10, 64,
     attention_size=128, heads=8,
-    mlp_depth=2, depth=5, batch_norm=True
+    mlp_depth=2, depth=3, batch_norm=True
   ))
-  training = SupervisedTraining(
+  training = StructuredTransformerTraining(
     net, data, valid_data,
     [DebugLoss()],
-    batch_size=16,
+    batch_size=4,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
     device="cuda:0",
