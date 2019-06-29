@@ -113,21 +113,36 @@ def matrix_to_quaternion(matrix):
     z = (matrix[1, 0] - matrix[0, 1]) / w4
     return np.array([w, x, y, z])
 
+def _np_relative_orientation(x, y, x_o, y_o):
+  offset = y - x
+  distance = np.linalg.norm(offset, axis=0)
+  direction = x_o.T @ (offset / distance)
+  direction[:, distance == 0.0] = 0
+  rotation = matrix_to_quaternion(x_o.T @ y_o)
+  return distance, direction, rotation
+
+def _torch_neighbourhood_relative_orientation(x, y, x_o, y_o):
+  offset = y - x[None]
+  distance = torch.norm(offset, dim=1, keepdim=True)
+  direction = (offset / (distance + 1e-6)) @ x_o
+  direction[(distance == 0).view(-1)] = 0
+  rotation = matrix_to_quaternion(x_o @ y_o)
+  if torch.isnan(distance).any(): print("bad distance")
+  if torch.isnan(direction).any(): print("bad direction")
+  if torch.isnan(rotation).any(): print("bad rotation")
+  return distance, direction, rotation
+
+def _torch_batch_relative_orientation(x, y, x_o, y_o):
+  offset = y - x
+  distance = torch.norm(offset, dim=1, keepdim=True)
+  direction = x_o @ (offset / (distance + 1e-6)).unsqueeze(-1)
+  direction[(distance == 0).view(-1)] = 0
+  rotation = matrix_to_quaternion(x_o @ y_o)
+  return distance, direction.squeeze(), rotation
+
 def relative_orientation(x, y, x_o, y_o):
   if isinstance(x, torch.Tensor):
-    offset = y - x[None]
-    distance = torch.norm(offset, dim=1, keepdim=True)
-    direction = (offset / (distance + 1e-6)) @ x_o
-    direction[(distance == 0).view(-1)] = 0
-    rotation = matrix_to_quaternion(x_o @ y_o)
-    if torch.isnan(distance).any(): print("bad distance")
-    if torch.isnan(direction).any(): print("bad direction")
-    if torch.isnan(rotation).any(): print("bad rotation")
-    return distance, direction, rotation
-  else:
-    offset = y - x
-    distance = np.linalg.norm(offset, axis=0)
-    direction = x_o.T @ (offset / distance)
-    direction[:, distance == 0.0] = 0
-    rotation = matrix_to_quaternion(x_o.T @ y_o)
-    return distance, direction, rotation
+    if x.dim() != y.dim():
+      return _torch_neighbourhood_relative_orientation(x, y, x_o, y_o)
+    return _torch_batch_relative_orientation(x, y, x_o, y_o)
+  return _np_relative_orientation(x, y, x_o, y_o)

@@ -18,15 +18,20 @@ class OrientationStructure(ts.ConstantStructure):
   def message(self, source, target):
     return torch.cat((source[self.connections], self.distances), dim=2)
 
-class RelativeStructure(ts.PairwiseData):
+class RelativeStructure(ts.ConstantStructure):
   def __init__(self, structure, rbf_params):
-    ts.PairwiseData.__init__(self, structure)
+    ts.ConstantStructure.__init__(
+      self,
+      structure.source,
+      structure.target,
+      structure.connections
+    )
     self.rbf = rbf_params
 
   def compare(self, source, target):
-    x, y = target[:3], source[:, :3]
-    x_o, y_o = target[3:-1].reshape(3, 3), source[:, 3:-1].reshape(-1, 3, 3)
-    x_i, y_i = target[-1], source[:, -1]
+    x, y = target[:, :3], source[:, :3]
+    x_o, y_o = target[:, 3:-1].reshape(-1, 3, 3), source[:, 3:-1].reshape(-1, 3, 3)
+    x_i, y_i = target[:, -1], source[:, -1]
 
     distance, direction, rotation = relative_orientation(x, y, x_o, y_o)
     distance_sin = torch.sin((x_i - y_i) / 10)[:, None]
@@ -35,6 +40,16 @@ class RelativeStructure(ts.PairwiseData):
       gaussian_rbf(distance, *self.rbf),
       direction, rotation, distance_sin, distance_cos
     ), dim=1)
+
+  def message(self, source, target):
+    source = source[self.connections]
+    target_view = target.unsqueeze(1).expand(
+      target.size(0), source.size(1), *target.shape[1:]
+    )
+    target_view = target_view.contiguous().view(-1, *target_view.shape[2:])
+    source_view = source.view(-1, *source.shape[2:])
+    features = self.compare(source_view, target_view)
+    return features.view(source.size(0), source.size(1), *features.shape[1:])
 
 class MaskedStructure(OrientationStructure):
   def __init__(self, structure, distances,
@@ -48,7 +63,6 @@ class MaskedStructure(OrientationStructure):
     self.encoder_data[self.pre.expand_as(self.encoder_data)] = 0
     self.sequence = sequence[self.connections]
     self.sequence[self.post.expand_as(self.sequence)] = 0
-    # self.sequence = self.sequence.to(torch.float)
 
   def message(self, source, target):
     decoder_data = source[self.connections]
@@ -195,7 +209,7 @@ class StructuredTransformer(nn.Module):
 
   def forward(self, features, sequence, distances, structure):
     distance_data = RelativeStructure(structure, self.rbf)
-    relative_data = distance_data.constant.message(
+    relative_data = distance_data.message(
       distances, distances
     )
     relative_structure = OrientationStructure(structure, relative_data)
