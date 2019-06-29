@@ -7,15 +7,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as func
 from torchsupport.training.training import SupervisedTraining
-from torchsupport.modules.basic import one_hot_encode
 
-from torchsupport.modules.structured import ConstantStructure, SubgraphStructure
-from torchsupport.data.collate import BatchFirst
-from torchsupport.modules.structured import PackedTensor
-from torchsupport.modules.structured.parallel import DataParallel as SDP
+from torchsupport.structured import PackedTensor, ConstantStructure
+from torchsupport.structured import DataParallel as SDP
 
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
-from protsupport.utils.geometry import orientation, relative_orientation
+from protsupport.utils.geometry import orientation
 from protsupport.modules.structured_transformer import StructuredTransformer
 
 def valid_callback(training, data, predictions):

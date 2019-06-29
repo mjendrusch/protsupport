@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
-import torchsupport.modules.structured as ts
+import torchsupport.structured as ts
 from torchsupport.modules.basic import MLP
 from torchsupport.modules.recurrent import ConvGRUCell1d
 
@@ -138,17 +138,17 @@ class RecurrentGRULocalInteraction(LocalInteraction):
       out = block(out)
     z = torch.sigmoid(self.project_z(out))
     r = torch.sigmoid(self.project_r(out))
-    
+
     positions = inputs[:, :self.positions]
     state = inputs[:, self.positions:]
     out_pos = out[:, :self.positions]
     out_state = out[:, self.positions:]
-    
+
     h = z * state + (1 - z) * torch.tanh(
       self.project_h_x(out_pos) + self.project_h_s(out_state * r)
     )
     x = positions + out_pos
-    
+
     return x, h
 
 class GRULocalInteraction(LocalInteraction):

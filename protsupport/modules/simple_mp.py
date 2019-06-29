@@ -2,12 +2,11 @@ import torch
 from torch import nn
 from torch.nn import functional as func
 
-from torchsupport.modules.structured import connected_entities as ce
-from torchsupport.modules.structured import entitynn as enn
+from torchsupport.structured import modules as enn
 
 class LocalMLP(nn.Module):
   def __init__(self, in_size, out_size,
-               hidden_size=128, depth=3, 
+               hidden_size=128, depth=3,
                activation=func.relu):
     super(LocalMLP, self).__init__()
     self.preprocessor = nn.Linear(in_size, hidden_size)
@@ -48,8 +47,8 @@ class BaselineInverseFold(nn.Module):
   def __init__(self, in_size, out_size, hidden_size=128, depth=4):
     super(BaselineInverseFold, self).__init__()
     self.weighting = LocalWeighting(in_size, out_size, depth=depth)
-    self.interaction = enn.NeighbourDotAttention(out_size)
-    self.mlp = LocalMLP(out_size, 20, hidden_size=128, depth=depth)
+    self.interaction = enn.NeighbourDotAttention(out_size, out_size)
+    self.mlp = LocalMLP(out_size, 20, hidden_size=hidden_size, depth=depth)
 
   def forward(self, inputs, structure):
     out = self.weighting(inputs)
@@ -64,7 +63,7 @@ class StackedInverseFold(nn.Module):
       for idx in range(outer_depth)
     ])
     self.interactions = nn.ModuleList([
-      enn.NeighbourAttention(size)
+      enn.NeighbourDotAttention(size, size)
       for idx in range(outer_depth)
     ])
     self.mlp = LocalMLP(size, 20, hidden_size=128, depth=depth)

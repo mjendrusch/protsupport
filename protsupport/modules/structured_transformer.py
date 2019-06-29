@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as func
 
 from torchsupport.modules.basic import MLP, one_hot_encode
-import torchsupport.modules.structured as ts
+import torchsupport.structured as ts
 
 from protsupport.utils.geometry import relative_orientation
 from protsupport.modules.rbf import gaussian_rbf

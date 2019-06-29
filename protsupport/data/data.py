@@ -11,8 +11,7 @@ from torch.utils.data import Dataset
 from pyrosetta import pose_from_file
 from pyrosetta.rosetta.core.scoring.dssp import Dssp
 
-from torchsupport.modules.structured import connected_entities as ce
-# from torchsupport.data.structured import SubgraphData
+from torchsupport.structured import ConnectionStructure
 
 from protsupport.data.embedding import one_hot_aa, one_hot_secondary
 
@@ -358,11 +357,11 @@ class ProteinData():
       "distances": np.load(f"{self.paths[idx]}.distance.npy"),
       "hbonds": np.load(f"{self.paths[idx]}.hbond.npy"),
       "nodes": _parse_node_file(f"{self.paths[idx]}.nodes.csv"),
-      "backbone_structure": ce.ConnectionStructure.from_csv(
+      "backbone_structure": ConnectionStructure.from_csv(
         f"{self.paths[idx]}.backbone.csv"),
-      "hbond_structure": ce.ConnectionStructure.from_csv(
+      "hbond_structure": ConnectionStructure.from_csv(
         f"{self.paths[idx]}.hbond.csv"),
-      "contact_structure": ce.ConnectionStructure.from_csv(
+      "contact_structure": ConnectionStructure.from_csv(
         f"{self.paths[idx]}.contact.csv")
     }
 
