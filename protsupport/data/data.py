@@ -299,7 +299,7 @@ class PDBFragment(PDBNumeric):
 class PDBBaseline(Dataset):
   def __init__(self, data, neighbours=20):
     # TODO : rotation normalise every neigbourhood.
-    super(Dataset, self).__init__()
+    super(PDBBaseline, self).__init__()
     self.data = data
     self.features = []
     self.target = []
