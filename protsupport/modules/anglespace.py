@@ -13,15 +13,14 @@ class AngleLookup(nn.Module):
     self.angle_size = angle_size
     self.register_parameter(
       "angles",
-      nn.Parameter((torch.rand(angle_size, 3) - 0.5) * np.pi)
+      nn.Parameter((torch.rand(angle_size, 3) - 0.5) * 2 * np.pi)
     )
     self.lookup = nn.Linear(in_size, angle_size)
 
   def forward(self, inputs):
     key = self.lookup(inputs).softmax(dim=1)
-    the_angles = torch.atan2(self.angles.sin(), self.angles.cos())
-    value = key @ the_angles
-    return value
+    the_angles = torch.atan2(key @ self.angles.sin(), key @ self.angles.cos())
+    return the_angles
 
 class PositionLookup(nn.Module):
   def __init__(self, fragment_size=5):
