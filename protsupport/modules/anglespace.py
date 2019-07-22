@@ -26,8 +26,8 @@ class AngleLookup(nn.Module):
 class PositionLookup(nn.Module):
   def __init__(self, fragment_size=5):
     super(PositionLookup, self).__init__()
-    self.bond_lengths = torch.tensor([1.46, 1.53, 1.33]).unsqueeze(0)
-    self.bond_angles = np.pi - 1 / 180 * np.pi * torch.tensor([122.2, 111.9, 116.2]).unsqueeze(0)
+    self.register_buffer("bond_lengths", torch.tensor([1.46, 1.53, 1.33]).unsqueeze(0))
+    self.register_buffer("bond_angles", np.pi - 1 / 180 * np.pi * torch.tensor([122.2, 111.9, 116.2]).unsqueeze(0))
     self.fragment_size = fragment_size
 
   def to_snr(self, torsions):
@@ -56,7 +56,7 @@ class PositionLookup(nn.Module):
     result = torch.zeros(
       fragment_pad.sum(),
       *inputs.shape[1:]
-    )
+    ).to(inputs.device)
     result[fragment_access] = inputs
     result = result.view(
       result.size(0) // self.fragment_size,
@@ -97,7 +97,7 @@ class PositionLookup(nn.Module):
         [-np.sqrt(0.5), np.sqrt(1.5), 0.0],
         [-np.sqrt(2),   0.0,          0.0],
         [0.0,           0.0,          0.0]
-      ])
+      ]).to(target.device)
     else:
       pos = starter
     pos = pos.unsqueeze(0).expand(
@@ -140,7 +140,7 @@ class PositionLookup(nn.Module):
     return result
 
   def stitch(self, fragmented_result, fragment_indices, indices):
-    result = torch.zeros(indices.size(0), *fragmented_result.shape[1:])
+    result = torch.zeros(indices.size(0), *fragmented_result.shape[1:]).to(fragmented_result.device)
     result = fragmented_result[fragment_indices]
     return result
 
@@ -157,5 +157,5 @@ class DistanceLookup(PositionLookup):
     op = lambda x, y: (x - y).norm(dim=1)
     positions = positions.view(-1, 3)
     indices = torch.repeat_interleave(indices, 3)
-    result, batch_indices, _, _, access = scatter.pairwise(op, positions, indices)
-    return result, batch_indices, access
+    result, batch_indices = scatter.pairwise_no_pad(op, positions, indices)
+    return result, batch_indices

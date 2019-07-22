@@ -70,7 +70,7 @@ class InteractionConv(nn.Module):
 
 class ConvolutionalGN(nn.Module):
   def __init__(self, in_size, hidden_size=128, depth=3,
-               fragment_size=5, angles=128):
+               fragment_size=5, angles=60):
     super(ConvolutionalGN, self).__init__()
     self.state = nn.Linear(in_size, hidden_size)
     self.angles = nn.Linear(in_size, hidden_size)
@@ -88,15 +88,15 @@ class ConvolutionalGN(nn.Module):
     state = self.state(inputs)
 
     angles_out = []
-    distances_out = []
+    #distances_out = []
 
-    for block in self.blocks:
+    for idx, block in enumerate(self.blocks):
       out, state = block(out, state, indices)
       angles = self.angle_lookup(out)
-      distances, _, _ = self.position_lookup(angles, indices)
+      distances, _ = self.position_lookup(angles, indices)
 
-      angles_out.append(angles)
-      distances_out.append(distances.clone())
+      #angles_out.append(angles)
+      #distances_out.append(distances.clone())
 
       # TODO: do stuff with distances ...
 
@@ -104,5 +104,8 @@ class ConvolutionalGN(nn.Module):
         torch.cat((angles.sin(), angles.cos()), dim=1)
       )
       out = out + unlookup
+      
+      #if idx != len(self.blocks) - 1:
+      #  del distances
 
-    return distances_out
+    return distances
