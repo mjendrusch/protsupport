@@ -76,7 +76,7 @@ class ConvolutionalGN(nn.Module):
     self.angles = nn.Linear(in_size, hidden_size)
     self.angle_unlookup = nn.Linear(6, hidden_size)
     self.angle_lookup = AngleLookup(hidden_size, angles)
-    self.position_lookup = DistanceLookup(fragment_size=fragment_size)
+    self.position_lookup = PositionLookup(fragment_size=fragment_size)
     self.blocks = nn.ModuleList([
       InteractionConv(hidden_size, hidden_size, hidden_size // 2, depth=1)
       for idx in range(depth)
@@ -108,4 +108,6 @@ class ConvolutionalGN(nn.Module):
       #if idx != len(self.blocks) - 1:
       #  del distances
 
-    return distances
+    print("asize", angles.size())
+
+    return distances, angles.view(-1)
