@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -24,9 +26,9 @@ class _ConvBlockInner(nn.Module):
       nn.Conv1d(hidden_size, in_size, 1)
     ])
     self.bn = nn.ModuleList([
-      nn.BatchNorm1d(in_size),
-      nn.BatchNorm1d(hidden_size),
-      nn.BatchNorm1d(hidden_size)
+      nn.GroupNorm(32, in_size),
+      nn.GroupNorm(32, hidden_size),
+      nn.GroupNorm(32, hidden_size)
     ])
 
   def forward(self, inputs):
@@ -70,7 +72,7 @@ class InteractionConv(nn.Module):
 
 class ConvolutionalGN(nn.Module):
   def __init__(self, in_size, hidden_size=128, depth=3,
-               fragment_size=5, angles=60):
+               fragment_size=5, angles=60, integrate=5):
     super(ConvolutionalGN, self).__init__()
     self.state = nn.Linear(in_size, hidden_size)
     self.angles = nn.Linear(in_size, hidden_size)
@@ -81,6 +83,7 @@ class ConvolutionalGN(nn.Module):
       InteractionConv(hidden_size, hidden_size, hidden_size // 2, depth=1)
       for idx in range(depth)
     ])
+    self.integrate = integrate
 
   def forward(self, inputs, structure):
     indices = structure.indices
@@ -91,9 +94,10 @@ class ConvolutionalGN(nn.Module):
     #distances_out = []
 
     for idx, block in enumerate(self.blocks):
-      out, state = block(out, state, indices)
-      angles = self.angle_lookup(out)
-      distances, _ = self.position_lookup(angles, indices)
+      for idy in range(self.integrate):
+        out, state = block(out, state, indices)
+        angles = self.angle_lookup(out)
+        distances, _ = self.position_lookup(angles, indices)
 
       #angles_out.append(angles)
       #distances_out.append(distances.clone())
@@ -110,4 +114,56 @@ class ConvolutionalGN(nn.Module):
 
     print("asize", angles.size())
 
-    return distances, angles.view(-1)
+    return distances, angles
+
+class ResidualGN(nn.Module):
+  def __init__(self, in_size, hidden_size=128, depth=3,
+               fragment_size=5, angles=60, integrate=5):
+    super(ResidualGN, self).__init__()
+    self.state = nn.Linear(in_size, hidden_size)
+    self.angles = nn.Linear(in_size, hidden_size)
+    self.angle_unlookup = nn.Linear(6, hidden_size)
+    self.angle_lookup = nn.Linear(hidden_size, 3)#AngleLookup(hidden_size, angles)
+    self.position_lookup = PositionLookup(fragment_size=fragment_size)
+    self.blocks = nn.ModuleList([
+      InteractionConv(hidden_size, hidden_size, hidden_size // 2, depth=1)
+      for idx in range(depth)
+    ])
+    self.integrate = integrate
+
+  def forward(self, inputs, structure):
+    indices = structure.indices
+    out = self.angles(inputs)
+    state = self.state(inputs)
+
+    angles_out = []
+    #distances_out = []
+
+    angles = 2 * np.pi * (torch.rand(inputs.size(0), 3, device=inputs.device) - 0.5)
+    for idx, block in enumerate(self.blocks):
+      for idy in range(self.integrate):
+        unl = self.angle_unlookup(torch.cat((angles.sin(), angles.cos()), dim=1))
+        out = state + unl
+        out, state = block(out, state, indices)
+        angles_logits = self.angle_lookup(out)
+        angles = angles + angles_logits
+        angles = torch.atan2(angles.sin(), angles.cos())
+        distances, _ = self.position_lookup(angles, indices)
+
+        angles = angles + 0.1 * torch.randn_like(angles)
+      #angles_out.append(angles)
+      #distances_out.append(distances.clone())
+
+      # TODO: do stuff with distances ...
+
+      #unlookup = self.angle_unlookup(
+      #  torch.cat((angles.sin(), angles.cos()), dim=1)
+      #)
+      #out = out + unlookup
+      
+      #if idx != len(self.blocks) - 1:
+      #  del distances
+
+    print("asize", angles.size())
+
+    return distances, angles
