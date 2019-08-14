@@ -68,11 +68,11 @@ if __name__ == "__main__":
   training = SupervisedTraining(
     net, data, valid_data,
     [DebugLoss()],
-    batch_size=1024,
+    batch_size=2048,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-2),
     device="cuda:0",
-    network_name="baseline-autoregressive",
+    network_name="baseline-autoregressive-fixed",
     valid_callback=valid_callback
   )
   final_net = training.train()
