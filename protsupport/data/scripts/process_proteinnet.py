@@ -60,14 +60,23 @@ def compute_dihedrals(tertiary, mask):
     if valid:
       vectors = tertiary[idx + 1:idx + 4] - tertiary[idx:idx + 3]
       vnorm = np.linalg.norm(vectors, axis=1)
-      some_equal = (vnorm == 0.0).any()
-      if not some_equal:
-        angle = compute_dihedral_angle(*vectors)
-        angles[idx + 1] = angle
-      valid = valid and not some_equal
-      angle_mask[idx + 1] = valid
-  angles = angles.reshape(3, -1)
-  angle_mask = angle_mask.reshape(3, -1)
+      if (vnorm == 0).any():
+        continue
+      angle = compute_dihedral_angle(*vectors)
+      angles[idx + 1] = angle
+    # valid = idx // 3 < len(mask) - 1 and mask[idx // 3] and mask[idx // 3 + 1]
+    # if valid:
+    #   vectors = tertiary[idx + 1:idx + 4] - tertiary[idx:idx + 3]
+    #   vnorm = np.linalg.norm(vectors, axis=1)
+    #   some_equal = (vnorm == 0.0).any()
+    #   if not some_equal:
+    #     angle = compute_dihedral_angle(*vectors)
+    #     angles[idx + 1] = angle
+    #   valid = valid and not some_equal
+    #   angle_mask[idx + 1] = valid
+  angles = angles.reshape(-1)
+  angles = np.roll(angles, 1, axis=0).reshape(-1, 3).T
+  angle_mask = angle_mask.reshape(-1, 3).T
   return angles, angle_mask
 
 def compute_cb(tertiary, mask):
@@ -99,8 +108,10 @@ def protein_to_numpy(file_pointer):
     compute_inputs(primary, evolutionary, [], tertiary, mask)
 
   extended_tertiary = compute_cb(tertiary, mask)
-  angles, angle_mask = compute_dihedrals(tertiary, mask)
   tertiary = np.transpose(extended_tertiary, (1, 2, 0))
+  angles, angle_mask = compute_dihedrals(
+    tertiary[[0, 1, 3]].transpose(2, 0, 1).reshape(-1, 3), mask
+  )
   return mask, primary, evolutionary, secondary, tertiary, angles, angle_mask
 
 def proteins_to_numpy(path, file_pointer):

@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 
 from torchsupport.modules.basic import one_hot_encode
 
-from protsupport.utils.geometry import compute_rotation_matrix, vector_angle
+from protsupport.utils.geometry import compute_rotation_matrix, vector_angle, rectify_tertiary
 
 class ProteinNet(Dataset):
   def __init__(self, path):
@@ -213,40 +213,5 @@ class ProteinNetKNN(ProteinNet):
       tertiary.size(0), tertiary.size(1), *indices.shape
     )
     neighbour_tertiary = neighbour_tertiary.permute(2, 0, 1, 3)
-    rotations = self._rectify_tertiary(neighbour_tertiary)
+    rotations = rectify_tertiary(neighbour_tertiary)
     return keep, indices, rotations
-
-  def _rectify_tertiary(self, tertiary):
-    ter_np = tertiary.numpy().copy()
-    n_pos = ter_np[:, 0:1, :, 0:1]
-    ca_pos = ter_np[:, 1, :, 0]
-    ter_np -= n_pos
-    rotations = np.zeros((ca_pos.shape[0], 3, 3))
-    for idx, position in enumerate(ca_pos):
-      pivot = np.array([1, 0, 0])
-      angle = vector_angle(position, pivot)
-      axis = np.cross(position, pivot)
-      rot = np.eye(3)
-      shifted = ter_np[idx].copy()
-
-      if np.linalg.norm(axis) != 0.0 and angle - angle == 0:
-        rot = compute_rotation_matrix(axis, angle)
-        shifted = rot @ shifted
-
-      pivot = np.array([0, 0, 1])
-      cb_rot = np.eye(3)
-      cb_position = shifted[2, :, 0].copy()
-      cb_position[0] = 0.0
-      angle = vector_angle(cb_position, pivot)
-      axis = np.cross(cb_position, pivot)
-
-      if np.linalg.norm(axis) != 0.0 and angle - angle == 0:
-        cb_rot = compute_rotation_matrix(axis, angle)
-        shifted = cb_rot @ shifted
-
-      if abs(shifted[2, 1, 0]) > 1e-4:
-        print(rot, shifted[:, :, 0])
-
-      rotations[idx] = cb_rot @ rot
-
-    return rotations

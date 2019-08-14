@@ -26,4 +26,4 @@ class Baseline(nn.Module):
     prod = (p * w)
     cat = prod.reshape(inputs.size(0), -1)
     out = self.out(cat)
-    return [out]
+    return out

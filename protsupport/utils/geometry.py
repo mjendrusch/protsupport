@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial import cKDTree
 import torch
 
 def compute_dihedral_angle(a, b, c):
@@ -146,3 +147,55 @@ def relative_orientation(x, y, x_o, y_o):
       return _torch_neighbourhood_relative_orientation(x, y, x_o, y_o)
     return _torch_batch_relative_orientation(x, y, x_o, y_o)
   return _np_relative_orientation(x, y, x_o, y_o)
+
+def rectify_tertiary(tertiary):
+  if isinstance(tertiary, torch.Tensor):
+    ter_np = tertiary.numpy().copy()
+  else:
+    ter_np = tertiary.clone()
+  n_pos = ter_np[:, 0:1, :, 0:1]
+  ca_pos = ter_np[:, 1, :, 0]
+  ter_np -= n_pos
+  rotations = np.zeros((ca_pos.shape[0], 3, 3))
+  for idx, position in enumerate(ca_pos):
+    pivot = np.array([1, 0, 0])
+    angle = vector_angle(position, pivot)
+    axis = np.cross(position, pivot)
+    rot = np.eye(3)
+    shifted = ter_np[idx].copy()
+
+    if np.linalg.norm(axis) != 0.0 and angle - angle == 0:
+      rot = compute_rotation_matrix(axis, angle)
+      shifted = rot @ shifted
+
+    pivot = np.array([0, 0, 1])
+    cb_rot = np.eye(3)
+    cb_position = shifted[2, :, 0].copy()
+    cb_position[0] = 0.0
+    angle = vector_angle(cb_position, pivot)
+    axis = np.cross(cb_position, pivot)
+
+    if np.linalg.norm(axis) != 0.0 and angle - angle == 0:
+      cb_rot = compute_rotation_matrix(axis, angle)
+      shifted = cb_rot @ shifted
+
+    if abs(shifted[2, 1, 0]) > 1e-4:
+      print(rot, shifted[:, :, 0])
+
+    rotations[idx] = cb_rot @ rot
+
+  return rotations
+
+def nearest_neighbours(tertiary, k=15):
+  positions = tertiary[1, :, :]
+  pt = positions.transpose(1, 0)
+  tree = cKDTree(pt)
+  deltas, indices = tree.query(pt, k=k)
+  indices = torch.tensor(indices, dtype=torch.long, requires_grad=False)
+  deltas = torch.tensor(deltas, dtype=torch.float, requires_grad=False)
+  neighbour_tertiary = tertiary[:, :, indices.view(-1)].view(
+    tertiary.size(0), tertiary.size(1), *indices.shape
+  )
+  neighbour_tertiary = neighbour_tertiary.permute(2, 0, 1, 3)
+  rotations = rectify_tertiary(neighbour_tertiary)
+  return rotations, indices
