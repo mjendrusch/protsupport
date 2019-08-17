@@ -5,7 +5,9 @@ from pyrosetta import *
 
 from torchsupport.data.io import netread
 
-from protsupport.protocols.minimization_packing.design import NetPackMover
+from protsupport.protocols.minimization_packing.design import (
+  NetPackMover, AnnealedNetPackMover
+)
 from protsupport.modules.baseline import Baseline
 
 if __name__ == "__main__":
@@ -25,6 +27,10 @@ if __name__ == "__main__":
     net, pose, fix=fix_list, glycinate=True,
     scorefxn=scorefxn, kT=0.1, max_iter=1000
   )
+  # mover = AnnealedNetPackMover(
+  #   net, pose, fix=fix_list, glycinate=True, n_moves=50,
+  #   scorefxn=scorefxn, kT_high=100.0, kT_low=0.3, max_iter=100
+  # )
 
   out_path = sys.argv[4]
   index = 0
@@ -38,7 +44,7 @@ if __name__ == "__main__":
       mover.apply(pose)
       pose.dump_pdb(os.path.join(out_path, f"candidate-{index}-step-{step}.pdb"))
       value = scorefxn.score(pose)
-      sequence = pose.sequence()
+      sequence = mover.monte_carlo.lowest_score_pose().sequence()
       log.write(f"{step}\t{sequence}\t{value}\n")
       step += 1
       log.flush()

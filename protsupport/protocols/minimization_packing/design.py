@@ -1,6 +1,7 @@
 import random
 import math
 
+import numpy as np
 import torch
 
 #from pyrosetta import *
@@ -128,3 +129,48 @@ class NetPackMover(NetRotamerMover):
       self.monte_carlo.boltzmann(pose)
       self.monte_carlo.set_temperature(self.schedule(self.step))
       self.step += 1
+
+class AnnealedNetPackMover(NetPackMover):
+  def __init__(self, net, pose, kT_high=100.0, kT_low=0.3, history_size=4, **kwargs):
+    super(AnnealedNetPackMover, self).__init__(net, pose, kT=kT_high, **kwargs)
+    self.kT_high = kT_high
+    self.kT_low = kT_low
+    self.history_size = history_size
+    self.energy_history = torch.zeros(history_size)
+    self.jump = 0
+  
+  def update_history(self, current_energy):
+    self.energy_history = self.energy_history.roll(1)
+    self.energy_history[0] = current_energy
+
+  def schedule(self, step):
+    result = self.kT_high
+    if self.jump >= self.history_size:
+      average = self.energy_history[1:].mean()
+      if self.energy_history[0] - average > -1.0:
+        result = self.kT_high
+        self.jump = 1
+      else:
+        result = (self.kT_high - self.kT_low) * np.exp(-self.jump) + self.kT_low
+        self.jump += 1
+    else:
+      result = (self.kT_high - self.kT_low) * np.exp(-self.jump) + self.kT_low
+      self.jump += 1
+    print(
+      self.jump,
+      self.energy_history[0] - self.energy_history[1:].mean(),
+      result,
+      self.monte_carlo.lowest_score()
+    )
+    return result
+
+  def apply(self, pose):
+    for _ in range(self.max_iter):
+      self.monte_carlo.set_temperature(self.schedule(self.step))
+      for idx in range(self.n_moves):
+        NetRotamerMover.apply(self, pose)
+        self.monte_carlo.boltzmann(pose)
+        self.step += 1
+      current_energy = self.scorefxn.score(pose)
+      self.update_history(current_energy)
+        
