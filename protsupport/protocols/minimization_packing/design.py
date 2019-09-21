@@ -81,13 +81,16 @@ class NetRotamerMover(GuidedRotamerMover):
     ), dim=0).unsqueeze(0)
 
     if argmax:
-      prediction = self.net(features).argmax(dim=1)
+      logits = self.net(features)
+      print(logits)
+      print(logits.softmax(dim=1))
+      prediction = logits.argmax(dim=1)
       print(self.lookup[prediction[0]], mask, sequence.argmax(dim=0))
       sample = prediction.view(-1)[0]
     else:
-      prediction = self.net(features).softmax(dim=1)
-      dist = torch.distributions.OneHotCategorical(prediction)
-      sample = dist.sample().argmax(dim=1).view(-1)[0]
+      prediction = self.net(features)
+      dist = torch.distributions.Categorical(logits=prediction)
+      sample = dist.sample()[0]#.argmax(dim=1).view(-1)[0]
 
     return self.lookup[sample]
 
@@ -111,6 +114,13 @@ class NetPackMover(NetRotamerMover):
         if not self.fixed_position(idx):
           mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
         mask[idx] = 0
+      for idy in range(5):
+        for idx, residue in enumerate(pose.residues):
+          mask[idx] = 1
+          residue_name = self.sample_residue(pose, idx, mask=mask, argmax=True)
+          if not self.fixed_position(idx):
+            mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
+          mask[idx] = 0
       self.dropout = dropout
     self.scorefxn = scorefxn
     self.monte_carlo = MonteCarlo(pose, scorefxn, kT)
@@ -126,6 +136,7 @@ class NetPackMover(NetRotamerMover):
     for _ in range(self.max_iter):
       for idx in range(self.n_moves):
         super(NetPackMover, self).apply(pose)
+        print(self.scorefxn.score(pose))
       self.monte_carlo.boltzmann(pose)
       self.monte_carlo.set_temperature(self.schedule(self.step))
       self.step += 1
@@ -173,4 +184,131 @@ class AnnealedNetPackMover(NetPackMover):
         self.step += 1
       current_energy = self.scorefxn.score(pose)
       self.update_history(current_energy)
+
+class LikelihoodDesign(NetRotamerMover):
+  def __init__(self, net, pose, fix=None, max_iter=100,
+               n_moves=1, scorefxn=None, kT=0.1, k=15,
+               dropout=0.5):
+    super(LikelihoodDesign, self).__init__(net, pose, k=k, dropout=dropout)
+    self.n_moves = n_moves
+    self.max_iter = max_iter
+    self.kT = kT
+    self.fix = fix if fix is not None else []
+    self.step = 0
+    self.dropout = 0.0
+    initial_sequence = [char for char in pose.sequence()]
+    mask = torch.tensor([
+      1 - int(self.fixed_position(idx))
+      for idx in range(len(pose.sequence()))
+    ], dtype=torch.bool)
+    for idx, residue in enumerate(pose.residues):
+      residue_name = self.sample_residue(initial_sequence, idx, mask=mask, argmax=True)
+      if not self.fixed_position(idx):
+        initial_sequence[idx] = residue_name
+      mask[idx] = 0
+    self.initial_sequence = initial_sequence
+    self.dropout = dropout
+    self.best = self.score(initial_sequence)
+    self.best_sequence = initial_sequence
+
+  def single_score(self, seq, position, mask=None):
+    inds = self.indices[position]
+    rot = self.rotations[position]
+    sequence = one_hot_encode(seq, self.lookup)
+    sequence = sequence[:, inds]
+    if mask is not None:
+      mask = mask[inds].clone()
+    else:
+      mask = torch.rand(sequence.size(1)) < 0#self.dropout
+    mask[0] = 1
+    sequence[:, mask] = 0.0
+    sequence = torch.cat((mask.unsqueeze(0).float(), sequence), dim=0)
+
+    tertiary = self.tertiary[:, :, inds].clone()
+    tertiary = tertiary - tertiary[0:1, :, 0:1]
+    tertiary = torch.tensor(rot, dtype=torch.float) @ tertiary
+    tertiary = tertiary.view(-1, tertiary.size(-1)) / 10
+    angles = self.angles[:, inds]
+    features = torch.cat((
+      angles.sin(), angles.cos(), tertiary, sequence
+    ), dim=0).unsqueeze(0)
+
+    logits = self.net(features)
+    result = -logits.softmax(dim=1)[0, AA_ID_DICT[seq[position]] - 1]
+    return result
+
+  def score(self, seq, mask=None):
+    logprob = 0
+    with torch.no_grad():
+      for position in range(len(seq)):
+        logprob += self.single_score(seq, position, mask=mask)
+    return logprob
+
+  def sample_residue(self, seq, position, mask=None, argmax=False):
+    inds = self.indices[position]
+    rot = self.rotations[position]
+    sequence = one_hot_encode(seq, self.lookup)
+    sequence = sequence[:, inds]
+    if mask is not None:
+      mask = mask[inds].clone()
+    else:
+      mask = torch.rand(sequence.size(1)) < self.dropout
+    mask[0] = 1
+    sequence[:, mask] = 0.0
+    sequence = torch.cat((mask.unsqueeze(0).float(), sequence), dim=0)
+
+    tertiary = self.tertiary[:, :, inds].clone()
+    tertiary = tertiary - tertiary[0:1, :, 0:1]
+    tertiary = torch.tensor(rot, dtype=torch.float) @ tertiary
+    tertiary = tertiary.view(-1, tertiary.size(-1)) / 10
+    angles = self.angles[:, inds]
+    features = torch.cat((
+      angles.sin(), angles.cos(), tertiary, sequence
+    ), dim=0).unsqueeze(0)
+
+    if argmax:
+      print("FS", features.shape)
+      logits = self.net(features)
+      print(logits)
+      print(logits.softmax(dim=1))
+      prediction = logits.argmax(dim=1)
+      print(self.lookup[prediction[0]], mask, sequence.argmax(dim=0))
+      sample = prediction.view(-1)[0]
+    else:
+      prediction = self.net(features)
+      dist = torch.distributions.Categorical(logits=prediction)
+      sample = dist.sample()[0]#.argmax(dim=1).view(-1)[0]
+
+    return self.lookup[sample]
+
+  def metropolis(self, current, proposal):
+    log_alpha = - (proposal - current) / self.kT
+    alpha = np.exp(log_alpha)
+    uniform = random.random()
+    accept = uniform < alpha
+    return accept
+
+  def proposal(self, sequence):
+    position = random.randrange(len(sequence))
+    while self.fixed_position(position):
+      position = random.randrange(len(sequence))
+    residue_name = self.sample_residue(sequence, position)
+    sequence[position] = residue_name
+    return sequence
+
+  def apply(self, sequence):
+    sequence = sequence or self.initial_sequence
+    current_energy = self.score(sequence)
+    for _ in range(self.max_iter):
+      steps = random.randint(1, 10)
+      for idx in range(steps):
+        new_sequence = self.proposal(sequence)
+      new_energy = self.score(new_sequence)
+      if self.metropolis(current_energy, new_energy):
+        sequence = new_sequence
+      if new_energy < self.best:
+        self.best = new_energy
+        self.best_sequence = new_sequence
+        print("".join(self.best_sequence), self.best)
         
+    return sequence
