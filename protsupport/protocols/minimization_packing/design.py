@@ -82,16 +82,12 @@ class NetRotamerMover(GuidedRotamerMover):
 
     if argmax:
       logits = self.net(features)
-      print(logits)
-      print(logits.softmax(dim=1))
       prediction = logits.argmax(dim=1)
-      print(self.lookup[prediction[0]], mask, sequence.argmax(dim=0))
       sample = prediction.view(-1)[0]
     else:
       prediction = self.net(features)
       dist = torch.distributions.Categorical(logits=prediction)
-      sample = dist.sample()[0]#.argmax(dim=1).view(-1)[0]
-
+      sample = dist.sample()[0]
     return self.lookup[sample]
 
 class NetPackMover(NetRotamerMover):
@@ -110,7 +106,7 @@ class NetPackMover(NetRotamerMover):
         for idx in range(len(pose.sequence()))
       ], dtype=torch.bool)
       for idx, residue in enumerate(pose.residues):
-        residue_name = "G"#self.sample_residue(pose, idx, mask=mask, argmax=True)
+        residue_name = "G"
         if not self.fixed_position(idx):
           mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
         mask[idx] = 0
@@ -167,12 +163,6 @@ class AnnealedNetPackMover(NetPackMover):
     else:
       result = (self.kT_high - self.kT_low) * np.exp(-self.jump) + self.kT_low
       self.jump += 1
-    print(
-      self.jump,
-      self.energy_history[0] - self.energy_history[1:].mean(),
-      result,
-      self.monte_carlo.lowest_score()
-    )
     return result
 
   def apply(self, pose):
@@ -219,7 +209,7 @@ class LikelihoodDesign(NetRotamerMover):
     if mask is not None:
       mask = mask[inds].clone()
     else:
-      mask = torch.rand(sequence.size(1)) < 0#self.dropout
+      mask = torch.rand(sequence.size(1)) < 0
     mask[0] = 1
     sequence[:, mask] = 0.0
     sequence = torch.cat((mask.unsqueeze(0).float(), sequence), dim=0)
@@ -267,18 +257,13 @@ class LikelihoodDesign(NetRotamerMover):
     ), dim=0).unsqueeze(0)
 
     if argmax:
-      print("FS", features.shape)
       logits = self.net(features)
-      print(logits)
-      print(logits.softmax(dim=1))
       prediction = logits.argmax(dim=1)
-      print(self.lookup[prediction[0]], mask, sequence.argmax(dim=0))
       sample = prediction.view(-1)[0]
     else:
       prediction = self.net(features)
       dist = torch.distributions.Categorical(logits=prediction)
-      sample = dist.sample()[0]#.argmax(dim=1).view(-1)[0]
-
+      sample = dist.sample()[0]
     return self.lookup[sample]
 
   def metropolis(self, current, proposal):
@@ -309,6 +294,5 @@ class LikelihoodDesign(NetRotamerMover):
       if new_energy < self.best:
         self.best = new_energy
         self.best_sequence = new_sequence
-        print("".join(self.best_sequence), self.best)
         
     return sequence
