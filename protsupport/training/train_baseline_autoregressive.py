@@ -72,7 +72,7 @@ if __name__ == "__main__":
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-2),
     device="cuda:0",
-    network_name="baseline-autoregressive-fixed",
+    network_name=f"baseline-autoregressive-fixed-{sys.argv[3]}",
     valid_callback=valid_callback
   )
   final_net = training.train()

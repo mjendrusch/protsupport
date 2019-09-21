@@ -43,6 +43,7 @@ class TransformerNet(ProteinNetKNN):
 
   def __getitem__(self, index):
     window = slice(self.index[index], self.index[index + 1])
+    window = window[:500]
     inds = self.inds[window]
     primary = self.pris[window] - 1
     evolutionary = self.evos[:, window]
@@ -112,11 +113,11 @@ if __name__ == "__main__":
   training = StructuredTransformerTraining(
     net, data, valid_data,
     [DebugLoss()],
-    batch_size=4,
+    batch_size=8,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
-    device="cpu",
-    network_name="structured-transformer",
+    device="cuda:0",
+    network_name="structured-transformer-long",
     valid_callback=valid_callback
-  )
+  ).load()
   final_net = training.train()

@@ -100,14 +100,14 @@ def orientation(positions):
 
 def matrix_to_quaternion(matrix):
   if isinstance(matrix, torch.Tensor):
-    w = torch.sqrt(1.0 + matrix[:, 0, 0] + matrix[:, 1, 1] + matrix[:, 2, 2]) / 2.0
+    w = torch.sqrt(1.0 + matrix[:, 0, 0] + matrix[:, 1, 1] + matrix[:, 2, 2] + 1e-6) / 2.0
     w4 = (4.0 * w)
     x = (matrix[:, 2, 1] - matrix[:, 1, 2]) / (w4 + 1e-6)
     y = (matrix[:, 0, 2] - matrix[:, 2, 0]) / (w4 + 1e-6)
     z = (matrix[:, 1, 0] - matrix[:, 0, 1]) / (w4 + 1e-6)
     return torch.cat([w[:, None], x[:, None], y[:, None], z[:, None]], dim=1)
   else:
-    w = np.sqrt(1.0 + matrix[0, 0] + matrix[1, 1] + matrix[2, 2]) / 2.0
+    w = np.sqrt(1.0 + matrix[0, 0] + matrix[1, 1] + matrix[2, 2] + 1e-6) / 2.0
     w4 = (4.0 * w)
     x = (matrix[2, 1] - matrix[1, 2]) / w4
     y = (matrix[0, 2] - matrix[2, 0]) / w4
@@ -139,6 +139,9 @@ def _torch_batch_relative_orientation(x, y, x_o, y_o):
   direction = x_o @ (offset / (distance + 1e-6)).unsqueeze(-1)
   direction[(distance == 0).view(-1)] = 0
   rotation = matrix_to_quaternion(x_o @ y_o)
+  if torch.isnan(distance).any(): print("bad distance")
+  if torch.isnan(direction).any(): print("bad direction")
+  if torch.isnan(rotation).any(): print("bad rotation")
   return distance, direction.squeeze(), rotation
 
 def relative_orientation(x, y, x_o, y_o):

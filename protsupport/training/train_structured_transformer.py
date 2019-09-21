@@ -58,7 +58,7 @@ class TransformerNet(ProteinNetKNN):
     orientation = torch.cat((distances, orientation, indices), dim=1)
     angles = self.angs[:, window].transpose(0, 1)
 
-    neighbours = ConstantStructure(0, 0, inds - self.index[index])
+    neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
 
     sin = torch.sin(angles)
     cos = torch.cos(angles)
@@ -71,7 +71,7 @@ class TransformerNet(ProteinNetKNN):
       neighbours
     )
 
-    return inputs, PackedTensor(primary)
+    return inputs, PackedTensor(primary, split=False)
 
   def __len__(self):
     return ProteinNet.__len__(self)
@@ -105,11 +105,11 @@ if __name__ == "__main__":
   training = StructuredTransformerTraining(
     net, data, valid_data,
     [DebugLoss()],
-    batch_size=4,
+    batch_size=8,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
     device="cuda:0",
-    network_name="structured-transformer",
+    network_name="structured-transformer-long",
     valid_callback=valid_callback
-  )
+  ).load()
   final_net = training.train()

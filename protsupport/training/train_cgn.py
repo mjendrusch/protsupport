@@ -16,7 +16,7 @@ from torchsupport.modules.basic import one_hot_encode
 from torchsupport.structured import DataParallel as SDP
 
 from protsupport.modules.anglespace import PositionLookup
-from protsupport.modules.rgn import ConvolutionalGN, ResidualGN
+from protsupport.modules.rgn import ConvolutionalGN, ResidualGN, RGN, TransformerGN
 from protsupport.data.proteinnet import ProteinNet
 
 class RGNNet(ProteinNet):
@@ -26,7 +26,7 @@ class RGNNet(ProteinNet):
   def __getitem__(self, index):
     result = super().__getitem__(index)
     primary = result["primary"][:500]
-    evolutionary = result["evolutionary"][:500].t()
+    evolutionary = result["evolutionary"][:, :500].t()
     tertiary = result["tertiary"] / 100
     tertiary = tertiary[[0, 1, 3], :, :].permute(2, 0, 1).contiguous()[:500].view(-1, 3)
     angles = result["angles"][:, :500].contiguous()
@@ -36,6 +36,7 @@ class RGNNet(ProteinNet):
 
     membership = SubgraphStructure(torch.zeros(primary.size(0), dtype=torch.long))
     primary_onehot = one_hot_encode(primary - 1, range(20)).t()
+    primary_onehot = torch.cat((primary_onehot, evolutionary), dim=1)
 
     inputs = (
       PackedTensor(primary_onehot),
@@ -75,24 +76,26 @@ class StructuredMaskedCE(nn.Module):
     inputs, _ = scatter.pairwise_no_pad(dst, inputs, indices)
     print(target.shape, mask.shape, inputs.shape)
     print("rdt", rmsd_indices.dtype)
-    result = (inputs - target) ** 2
-    result = torch.sqrt(scatter.add(result, rmsd_indices.to(result.device)) / float(result.size(0)) + 1e-6)
+    result = (100 * inputs - 100 * target) ** 2
+    unique, counts = structure.indices.unique(return_counts=True)
+    denominator = (counts * (counts - 1)).float().to(result.device)
+    result = torch.sqrt(2 * scatter.add(result, rmsd_indices.to(result.device)) + 1e-6) / torch.sqrt(denominator) / counts.float().to(result.device)
     return result.mean()#torch.sqrt(result.mean() + 1e-6)
 
 class AngleMSE(nn.Module):
   def forward(self, inputs, target):
     target, mask = target
-    mask = mask[:inputs.view(-1).size(0)]
-    inputs = inputs.view(-1)
-    target = target.view(-1)[:inputs.size(0)]
-    print("ITS0", inputs.shape, target.shape, mask.shape)
+    mask = mask[:inputs.size(0)]
     target = target[mask.nonzero().view(-1)]
     inputs = inputs[mask.nonzero().view(-1)]
     print("ITS", inputs.shape, target.shape)
+    inputs = inputs.view(-1)
+    target = target.view(-1)[:inputs.size(0)]
+    print("ITS0", inputs.shape, target.shape, mask.shape)
     #return (((inputs - inputs) % (2 * np.pi)) ** 2).mean() / 10
     result = ((inputs.sin() - target.sin()) ** 2).mean() + ((inputs.cos() - target.cos()) ** 2).mean()
     result = result / 10.0
-    return result
+    return 0.0 * result
 
 def valid_callback(trn, inputs, outputs):
   fig = plt.figure()
@@ -139,8 +142,13 @@ def valid_callback(trn, inputs, outputs):
   trn.writer.add_figure("heat in", fig, trn.step_id)
   plt.close("all")
 
+  fig = plt.figure()
+  ax = fig.add_subplot(111)
+  ax.imshow(abs(dstt - dst))
 
-  
+  trn.writer.add_figure("heat del", fig, trn.step_id)
+  plt.close("all")
+
   fig = plt.figure()
   ax = fig.add_subplot(111)
 
@@ -153,17 +161,18 @@ def valid_callback(trn, inputs, outputs):
   trn.writer.add_figure("heat expected", fig, trn.step_id)
 
   plt.close("all")
+  trn.writer.add_scalar("size", float(ter.shape[0]), trn.step_id)
 
 if __name__ == "__main__":
-  data = RGNNet(sys.argv[1])
+  data = RGNNet(sys.argv[2])
   valid_data = RGNNet(sys.argv[2])
-  net = SDP(ConvolutionalGN(20, depth=20, integrate=1, angles=512))
+  net = SDP(TransformerGN(41, depth=3))
   training = SupervisedTraining(
     net, data, valid_data,
     [StructuredMaskedCE(), AngleMSE()],
     batch_size=16,
     max_epochs=1000,
-    optimizer=lambda x: torch.optim.Adam(x, lr=5e-5),
+    optimizer=lambda x: torch.optim.Adam(x, lr=0.1),
     device="cuda:0",
     network_name="cgn-test",
     valid_callback=valid_callback
