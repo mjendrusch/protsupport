@@ -106,7 +106,7 @@ class NetPackMover(NetRotamerMover):
         for idx in range(len(pose.sequence()))
       ], dtype=torch.bool)
       for idx, residue in enumerate(pose.residues):
-        residue_name = self.sample_residue(pose, idx, mask=mask, argmax=True)
+        residue_name = "G"#self.sample_residue(pose, idx, mask=mask, argmax=True)
         if not self.fixed_position(idx):
           mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
         mask[idx] = 0
