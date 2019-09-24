@@ -15,7 +15,7 @@ from torchsupport.structured import DataParallel as SDP
 
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
-from protsupport.modules.flexible_transformer import StructuredTransformer
+from protsupport.modules.flexible_transformer import FlexibleTransformer
 
 def valid_callback(training, data, predictions):
   inputs, labels = data
@@ -105,7 +105,7 @@ class StructuredTransformerTraining(SupervisedTraining):
 if __name__ == "__main__":
   data = TransformerNet(sys.argv[1], num_neighbours=15)
   valid_data = TransformerNet(sys.argv[2], num_neighbours=15)
-  net = StructuredTransformer(
+  net = FlexibleTransformer(
     6, 20, 128, 10, 64,
     attention_size=128, heads=8,
     mlp_depth=2, depth=3, batch_norm=True
