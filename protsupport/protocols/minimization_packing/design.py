@@ -6,6 +6,7 @@ import torch
 
 #from pyrosetta import *
 from pyrosetta.rosetta.protocols.simple_moves.sidechain_moves import JumpRotamerSidechainMover
+from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.core.conformation import get_residue_from_name, get_residue_from_name1
 from pyrosetta.rosetta.core.chemical import AA
 from pyrosetta import MonteCarlo
@@ -92,8 +93,9 @@ class NetRotamerMover(GuidedRotamerMover):
 
 class NetPackMover(NetRotamerMover):
   def __init__(self, net, pose, fix=None, glycinate=False, max_iter=100,
-               n_moves=1, scorefxn=None, kT=0.1, k=15, dropout=0.5):
+               n_moves=1, scorefxn=None, kT=0.1, k=15, dropout=0.5, relax=True):
     super(NetPackMover, self).__init__(net, pose, k=k, dropout=dropout)
+    self.relax = relax
     self.n_moves = n_moves
     self.max_iter = max_iter
     self.kT = kT
@@ -110,13 +112,6 @@ class NetPackMover(NetRotamerMover):
         if not self.fixed_position(idx):
           mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
         mask[idx] = 0
-      for idy in range(5):
-        for idx, residue in enumerate(pose.residues):
-          mask[idx] = 1
-          residue_name = self.sample_residue(pose, idx, mask=mask, argmax=True)
-          if not self.fixed_position(idx):
-            mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
-          mask[idx] = 0
       self.dropout = dropout
     self.scorefxn = scorefxn
     self.monte_carlo = MonteCarlo(pose, scorefxn, kT)
@@ -129,6 +124,10 @@ class NetPackMover(NetRotamerMover):
     return self.kT# * math.exp(-step * math.log(2) / 100)
 
   def apply(self, pose):
+    if self.relax:
+      relax = FastRelax()
+      relax.set_scorefxn(self.scorefxn)
+      relax.set_movemap(...) # TODO
     for _ in range(self.max_iter):
       for idx in range(self.n_moves):
         super(NetPackMover, self).apply(pose)
