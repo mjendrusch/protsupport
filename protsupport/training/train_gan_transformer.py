@@ -13,6 +13,8 @@ from torchsupport.training.translation import PairedGANTraining
 from torchsupport.structured import PackedTensor, ConstantStructure
 from torchsupport.structured import DataParallel as SDP
 
+from torchsupport.data.io import to_device
+
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
 from protsupport.modules.transformer_gan import TransformerGenerator, TransformerDiscriminator
@@ -43,6 +45,8 @@ class TransformerNet(ProteinNetKNN):
     window = slice(self.index[index], self.index[index + 1])
     inds = self.inds[window]
     primary = self.pris[window] - 1
+    if len(primary) > 500:
+      return self.__getitem__((index + 1) % len(self))
     evolutionary = self.evos[:, window]
     tertiary = self.ters[:, :, window]
     orientation = self.ors[window, :, :].view(
@@ -65,24 +69,25 @@ class TransformerNet(ProteinNetKNN):
     mask_positions = torch.randint(0, primary.size(0), (number_of_masked,))
     primary_onehot = torch.zeros(primary.size(0), 20)
     primary_onehot[torch.arange(0, primary.size(0)), primary.view(-1)] = 1
-    primary_onehot[mask.nonzero()[0].view(-1)] = 0
+    primary_onehot[mask.nonzero().view(-1)] = 0
     mask[mask_positions] = 1.0
 
     sin = torch.sin(angles)
     cos = torch.cos(angles)
     angle_features = torch.cat((sin, cos), dim=1)
 
-    features = torch.cat((angle_features, primary_onehot, mask), dim=1)
+    #features = torch.cat((angle_features, primary_onehot, mask.unsqueeze(-1)), dim=1)
+    primary_logits = torch.log(primary_onehot + 1e-16)
 
     inputs = (
-      PackedTensor(angle_features),
-      PackedTensor(primary_onehot),
-      PackedTensor(mask),
-      PackedTensor(orientation),
+      PackedTensor(angle_features, box=True),
+      PackedTensor(primary_onehot, box=True),
+      PackedTensor(mask, box=True),
+      PackedTensor(orientation, box=True),
       neighbours
     )
 
-    return inputs, PackedTensor(primary, split=False)
+    return inputs, PackedTensor(primary_logits, box=True)
 
   def __len__(self):
     return ProteinNet.__len__(self)
@@ -96,11 +101,19 @@ class DebugLoss(nn.Module):
     return self.loss(inputs, targets)
 
 class StructuredTransformerTraining(PairedGANTraining):
+  def sample(self, data):
+    latents = self.generator.module.sample(data[0][0].tensor.size(0))
+    return latents, data[0]
+
+  def mixing_key(self, data):
+    return data[1].tensor
+
   def reconstruction_loss(self, data, generated, sample):
     _, sequence = data
     _, fake_sequence = generated
-    loss = func.cross_entropy(fake_sequence, sequence)
-    return loss
+    sequence = sequence.tensor.argmax(dim=1).view(-1)
+    loss = func.cross_entropy(fake_sequence.tensor, sequence)
+    return 0.0#loss
 
   # def each_step(self):
   #   learning_rate = torch.pow(torch.tensor(128.0), -0.5)
@@ -117,7 +130,7 @@ if __name__ == "__main__":
   generator = SDP(TransformerGenerator(
     27, 20, 128, 10, 64,
     attention_size=128, heads=8,
-    mlp_depth=2, depth=6, batch_norm=True
+    mlp_depth=2, depth=3, batch_norm=True
   ))
   discriminator = SDP(TransformerDiscriminator(
     27 + 20, 20, 128, 10,
@@ -129,6 +142,7 @@ if __name__ == "__main__":
     batch_size=8,
     max_epochs=1000,
     device="cuda:0",
-    network_name="structured-transformer-gan"
+    network_name="transformer-gan/pure-gan",
+    verbose=True
   ).load()
   final_net = training.train()

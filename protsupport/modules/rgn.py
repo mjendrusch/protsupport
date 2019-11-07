@@ -5,9 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as func
 
 from torchsupport.modules.residual import ResNetBlock1d
-from torchsupport.structured import scatter
+from torchsupport.structured import scatter, Transformer, FullyConnectedScatter
 
-from protsupport.modules.anglespace import AngleLookup, PositionLookup, DistanceLookup
+from protsupport.modules.anglespace import AngleLookup, PositionLookup, DistanceLookup, AngleSample
 
 class RGN(nn.Module):
   def __init__(self):
@@ -77,18 +77,21 @@ class ConvolutionalGN(nn.Module):
     self.state = nn.Linear(in_size, hidden_size)
     self.angles = nn.Linear(in_size, hidden_size)
     self.angle_unlookup = nn.Linear(6, hidden_size)
-    self.angle_lookup = AngleLookup(hidden_size, angles)
+    self.angle_lookup = AngleSample(hidden_size, angles)
     self.position_lookup = PositionLookup(fragment_size=fragment_size)
     self.blocks = nn.ModuleList([
       InteractionConv(hidden_size, hidden_size, hidden_size // 2, depth=1)
       for idx in range(depth)
     ])
+    self.transformer = Transformer(hidden_size, hidden_size, hidden_size // 2, attention_size=8)
     self.integrate = integrate
 
   def forward(self, inputs, structure):
     indices = structure.indices
     out = self.angles(inputs)
     state = self.state(inputs)
+
+    struc = FullyConnectedScatter(structure.indices)
 
     angles_out = []
     #distances_out = []
@@ -103,18 +106,41 @@ class ConvolutionalGN(nn.Module):
       #distances_out.append(distances.clone())
 
       # TODO: do stuff with distances ...
+        #pos = distances.detach().cpu()
 
-      unlookup = self.angle_unlookup(
-        torch.cat((angles.sin(), angles.cos()), dim=1)
-      )
-      out = out + unlookup
-      
+        unlookup = self.angle_unlookup(
+          torch.cat((angles.sin(), angles.cos()), dim=1)
+        )
+        out = out + unlookup
+      if self.transformer is not None:
+        out = self.transformer(out, struc)
       #if idx != len(self.blocks) - 1:
       #  del distances
 
     print("asize", angles.size())
 
     return distances, angles
+
+class TransformerGN(nn.Module):
+  def __init__(self, in_size, hidden_size=128, depth=3, fragment_size=5):
+    super(TransformerGN, self).__init__()
+    self.preprocess = nn.Linear(in_size, hidden_size)
+    self.angle_lookup = AngleSample(hidden_size, 60)#nn.Linear(hidden_size, 3)
+    self.position_lookup = PositionLookup(fragment_size=fragment_size)
+    self.blocks = nn.ModuleList([
+      Transformer(hidden_size, hidden_size, hidden_size // 2, attention_size=8)
+      for idx in range(depth)
+    ])
+
+  def forward(self, inputs, structure):
+    fcs = FullyConnectedScatter(structure.indices)
+    out = self.preprocess(inputs)
+    for block in self.blocks:
+      out = block(out, fcs)
+    angles = self.angle_lookup(out)
+    #angles = torch.atan2(angles.sin(), angles.cos())
+    positions, _ = self.position_lookup(angles, structure.indices)
+    return positions, angles
 
 class ResidualGN(nn.Module):
   def __init__(self, in_size, hidden_size=128, depth=3,
@@ -167,3 +193,19 @@ class ResidualGN(nn.Module):
     print("asize", angles.size())
 
     return distances, angles
+
+class RGN(nn.Module):
+  def __init__(self, in_size, hidden_size=800, angles=512, fragment_size=5):
+    super(RGN, self).__init__()
+    self.angle_lookup = AngleLookup(2 * hidden_size, angles)
+    self.rnn = nn.LSTM(in_size, hidden_size, 2, bidirectional=True, batch_first=True)
+    self.position_lookup = PositionLookup(fragment_size=fragment_size)
+    #self.angle_rnn = nn.LSTM(2 * hidden_size + 6, hidden_size, 2, batch_first=True)
+
+  def forward(self, inputs, structure):
+    indices = structure.indices
+    out, _ = scatter.sequential(self.rnn, inputs, indices)
+    angles = self.angle_lookup(out)
+    positions, _ = self.position_lookup(angles, indices)
+    return positions, angles
+

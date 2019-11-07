@@ -6,6 +6,7 @@ from torchsupport.modules.basic import MLP, one_hot_encode
 import torchsupport.structured as ts
 from torchsupport.structured import scatter
 from torchsupport.modules.gradient import hard_one_hot
+from torchsupport.structured import PackedTensor
 
 from protsupport.utils.geometry import relative_orientation
 from protsupport.modules.rbf import gaussian_rbf
@@ -31,7 +32,7 @@ class TransformerGenerator(nn.Module):
       batch_norm=batch_norm
     )
     self.decoder = StructuredTransformerDecoder(
-      out_size, size, distance_size, sequence_size,
+      out_size, size, distance_size, 0,#sequence_size,
       attention_size=attention_size, heads=heads, hidden_size=hidden_size,
       depth=depth, mlp_depth=mlp_depth, activation=activation,
       batch_norm=batch_norm, adaptive=self.latent_size
@@ -39,21 +40,21 @@ class TransformerGenerator(nn.Module):
     self.rbf = (0, max_distance, distance_kernels)
 
   def sample(self, batch_size):
-    latents = torch.randn(batch_size, self.latent_size)
+    latents = torch.randn(4, self.latent_size)
     return latents
 
   def forward(self, data):
-    (angle_features, sequence, mask, distances, structure), latents = data
-    features = torch.cat((angle_features, sequence, mask), dim=1)
+    latents, (angle_features, sequence, mask, distances, structure) = data
+    features = torch.cat((angle_features.tensor, sequence.tensor, mask.tensor.unsqueeze(-1)), dim=1)
     distance_data = RelativeStructure(structure, self.rbf)
     relative_data = distance_data.message(
-      distances, distances
+      distances.tensor, distances.tensor
     )
     relative_structure = OrientationStructure(structure, relative_data)
     encoding = self.encoder(features, relative_structure)
     result = self.decoder((encoding, latents), relative_structure)
-    result[mask > 0] = torch.log(sequence)[mask > 0]
-    return (features, distances, structure), result
+    result[mask.tensor > 0] = torch.log(sequence.tensor)[mask.tensor > 0]
+    return (angle_features, sequence, mask, distances, structure), PackedTensor(result, box=True, lengths=sequence.lengths)
 
 class TransformerDiscriminator(nn.Module):
   def __init__(self, in_size, out_size, size, distance_size,
@@ -68,17 +69,23 @@ class TransformerDiscriminator(nn.Module):
       depth=2 * depth, mlp_depth=mlp_depth, activation=activation,
       batch_norm=batch_norm
     )
-    self.verdict = nn.Linear(out_size, 1)
+    self.verdict = nn.Linear(size, 1)
     self.rbf = (0, max_distance, distance_kernels)
 
   def forward(self, data):
     (angle_features, sequence, mask, distances, structure), sequence_logits = data
-    features = torch.cat((angle_features, sequence, mask), dim=1)
-    sequence = hard_one_hot(sequence_logits)
+    features = torch.cat((angle_features.tensor, sequence.tensor, mask.tensor.unsqueeze(-1)), dim=1)
+    if sequence_logits.tensor.is_floating_point():
+      sequence = hard_one_hot(sequence_logits.tensor)
+    else:
+      batch_size = sequence_logits.tensor.size(0)
+      sequence = torch.zeros(batch_size, 20)
+      sequence[torch.arange(0, batch_size), sequence_logits.tensor.view(-1)] = 1
+      sequence = sequence.to(features.device)
 
     distance_data = RelativeStructure(structure, self.rbf)
     relative_data = distance_data.message(
-      distances, distances
+      distances.tensor, distances.tensor
     )
     relative_structure = OrientationStructure(structure, relative_data)
     features = torch.cat((features, sequence), dim=1)
