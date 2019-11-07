@@ -6,6 +6,7 @@ import torch
 
 #from pyrosetta import *
 from pyrosetta.rosetta.protocols.simple_moves.sidechain_moves import JumpRotamerSidechainMover
+from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.core.conformation import get_residue_from_name, get_residue_from_name1
 from pyrosetta.rosetta.core.chemical import AA
 from pyrosetta import MonteCarlo
@@ -97,6 +98,7 @@ class NetPackMover(NetRotamerMover):
     self.n_moves = n_moves
     self.max_iter = max_iter
     self.kT = kT
+    self.scorefxn = scorefxn
     self.fix = fix if fix is not None else []
     self.step = 0
     if glycinate:
@@ -106,19 +108,21 @@ class NetPackMover(NetRotamerMover):
         for idx in range(len(pose.sequence()))
       ], dtype=torch.bool)
       for idx, residue in enumerate(pose.residues):
-        residue_name = "G"
+        residue_name = self.sample_residue(pose, idx, mask=mask, argmax=True)
         if not self.fixed_position(idx):
           mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
         mask[idx] = 0
-      for idy in range(5):
-        for idx, residue in enumerate(pose.residues):
-          mask[idx] = 1
-          residue_name = self.sample_residue(pose, idx, mask=mask, argmax=True)
-          if not self.fixed_position(idx):
-            mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
-          mask[idx] = 0
+      # for idy in range(5):
+      # for idx, residue in enumerate(pose.residues):
+      #   mask[idx] = 1
+      #   residue_name = self.sample_residue(pose, idx, mask=mask, argmax=True)
+      #   if not self.fixed_position(idx):
+      #     mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
+      #   mask[idx] = 0
       self.dropout = dropout
-    self.scorefxn = scorefxn
+      relax = FastRelax()
+      relax.set_scorefxn(self.scorefxn)
+      relax.apply(pose)
     self.monte_carlo = MonteCarlo(pose, scorefxn, kT)
     self.glycinate = glycinate
 
