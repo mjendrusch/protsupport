@@ -36,7 +36,7 @@ class StructuredTransformerEncoderBlock(nn.Module):
     inputs = self.activation(self.bn(features))
     local = self.activation(self.local_bn(self.local(inputs)))
     attention = self.attention(local, local, structure)
-    return features + attention
+    return features + self.dropout(attention)
 
 class StructuredTransformerEncoder(nn.Module):
   def __init__(self, in_size, size, distance_size, attention_size=128,
