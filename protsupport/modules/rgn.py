@@ -7,12 +7,7 @@ import torch.nn.functional as func
 from torchsupport.modules.residual import ResNetBlock1d
 from torchsupport.structured import scatter, Transformer, FullyConnectedScatter
 
-from protsupport.modules.anglespace import AngleLookup, PositionLookup, DistanceLookup, AngleSample
-
-class RGN(nn.Module):
-  def __init__(self):
-    super(RGN, self).__init__()
-    pass
+from protsupport.modules.anglespace import AngleLookup, PositionLookup, DistanceLookup, AngleSample, AngleProject
 
 class _ConvBlockInner(nn.Module):
   def __init__(self, in_size, hidden_size, dilation=1):
@@ -197,7 +192,7 @@ class ResidualGN(nn.Module):
 class RGN(nn.Module):
   def __init__(self, in_size, hidden_size=800, angles=512, fragment_size=5):
     super(RGN, self).__init__()
-    self.angle_lookup = AngleLookup(2 * hidden_size, angles)
+    self.angle_lookup = AngleProject(2 * hidden_size, angles)
     self.rnn = nn.LSTM(in_size, hidden_size, 2, bidirectional=True, batch_first=True)
     self.position_lookup = PositionLookup(fragment_size=fragment_size)
     #self.angle_rnn = nn.LSTM(2 * hidden_size + 6, hidden_size, 2, batch_first=True)
@@ -208,4 +203,3 @@ class RGN(nn.Module):
     angles = self.angle_lookup(out)
     positions, _ = self.position_lookup(angles, indices)
     return positions, angles
-

@@ -6,6 +6,18 @@ import torch.nn.functional as func
 
 from torchsupport.structured import scatter
 from torchsupport import structured as ts
+from torchsupport.modules.activations.geometry import torus
+
+class AngleProject(nn.Module):
+  def __init__(self, in_size, angle_size):
+    super(AngleProject, self).__init__()
+    self.sin = nn.Linear(in_size, angle_size)
+    self.cos = nn.Linear(in_size, angle_size)
+
+  def forward(self, inputs):
+    sin = self.sin(inputs)
+    cos = self.cos(inputs)
+    return torus(sin, cos)
 
 class AngleLookup(nn.Module):
   def __init__(self, in_size, angle_size):
@@ -40,7 +52,7 @@ class AngleSample(nn.Module):
 
 class AngleLookupGrid(nn.Module):
   def __init__(self, in_size, angle_size):
-    super(AngleLookup, self).__init__()
+    super(AngleLookupGrid, self).__init__()
     self.angle_size = angle_size
     self.register_parameter(
       "angles",
