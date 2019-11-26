@@ -20,7 +20,7 @@ if __name__ == "__main__":
   with open(fixed_path) as fx:
     fix_list = []
     for line in fx:
-      fix_list.append(int(line.strip()) - 26)
+      fix_list.append(int(line.strip()))
     fix_list = sorted(list(set(fix_list)))
   scorefxn = get_fa_scorefxn()
   mover = NetPackMover(
@@ -34,7 +34,7 @@ if __name__ == "__main__":
 
   out_path = sys.argv[4]
   index = 0
-  
+
   while os.path.isfile(os.path.join(out_path, f"log-{index}")):
     time.sleep(1)
     index += 1
@@ -42,9 +42,10 @@ if __name__ == "__main__":
     step = 0
     while True:
       mover.apply(pose)
-      pose.dump_pdb(os.path.join(out_path, f"candidate-{index}-step-{step}.pdb"))
-      value = scorefxn.score(pose)
-      sequence = mover.monte_carlo.lowest_score_pose().sequence()
+      low_pose = mover.monte_carlo.lowest_score_pose()
+      low_pose.dump_pdb(os.path.join(out_path, f"candidate-{index}-step-{step}.pdb"))
+      value = scorefxn.score(low_pose)
+      sequence = low_pose.sequence()
       log.write(f"{step}\t{sequence}\t{value}\n")
       step += 1
       log.flush()

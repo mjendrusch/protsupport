@@ -9,7 +9,7 @@ from pyrosetta.rosetta.protocols.simple_moves.sidechain_moves import JumpRotamer
 from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.core.conformation import get_residue_from_name, get_residue_from_name1
 from pyrosetta.rosetta.core.chemical import AA
-from pyrosetta import MonteCarlo
+from pyrosetta import MonteCarlo, MoveMap
 from pyrosetta.toolbox import mutate_residue
 
 from torchsupport.modules.basic import one_hot_encode
@@ -102,6 +102,19 @@ class NetPackMover(NetRotamerMover):
     self.scorefxn = scorefxn
     self.fix = fix if fix is not None else []
     self.step = 0
+
+    self.fastrelax = ...
+    if relax or glycinate:
+      fastrelax = FastRelax()
+      fastrelax.set_scorefxn(self.scorefxn)
+      mm = MoveMap()
+      mm.set_bb(False)
+      mm.set_chi(True)
+      #for fixed in self.fix:
+      #  mm.set_chi(fixed, False)
+      fastrelax.set_movemap(mm)
+      self.fastrelax = fastrelax
+
     if glycinate:
       self.dropout = 1.0
       mask = torch.tensor([
@@ -114,9 +127,7 @@ class NetPackMover(NetRotamerMover):
           mutate_residue(pose, idx + 1, residue_name, pack_radius=10.0, pack_scorefxn=scorefxn)
         mask[idx] = 0
       self.dropout = dropout
-      relax = FastRelax()
-      relax.set_scorefxn(self.scorefxn)
-      relax.apply(pose)
+      self.fastrelax.apply(pose)
     self.monte_carlo = MonteCarlo(pose, scorefxn, kT)
     self.glycinate = glycinate
 
@@ -124,17 +135,19 @@ class NetPackMover(NetRotamerMover):
     return idx in self.fix
 
   def schedule(self, step):
-    return self.kT# * math.exp(-step * math.log(2) / 100)
+    # if step < 50:
+    #   return 50 * self.kT
+    # if step < 100:
+    #   return 10 * self.kT
+    return self.kT
 
   def apply(self, pose):
+    self.step = 0
     if self.relax:
-      relax = FastRelax()
-      relax.set_scorefxn(self.scorefxn)
-      relax.set_movemap(...) # TODO
+      self.fastrelax.apply(pose)
     for _ in range(self.max_iter):
       for idx in range(self.n_moves):
         super(NetPackMover, self).apply(pose)
-        print(self.scorefxn.score(pose))
       self.monte_carlo.boltzmann(pose)
       self.monte_carlo.set_temperature(self.schedule(self.step))
       self.step += 1
@@ -147,7 +160,7 @@ class AnnealedNetPackMover(NetPackMover):
     self.history_size = history_size
     self.energy_history = torch.zeros(history_size)
     self.jump = 0
-  
+
   def update_history(self, current_energy):
     self.energy_history = self.energy_history.roll(1)
     self.energy_history[0] = current_energy
