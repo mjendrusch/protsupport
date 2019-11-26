@@ -3,3 +3,5 @@ __pycache__
 .vscode
 XDG_CACHE_HOME
 runs
+new-runs
+*.ipynb
