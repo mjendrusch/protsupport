@@ -32,6 +32,8 @@ class RGNNet(ProteinNet):
     angles = result["angles"][:, :500].contiguous()
     mask = result["mask"][:500].view(-1)
 
+    print(angles.min(), angles.max())
+
     mask = mask#torch.repeat_interleave(mask, 3)
 
     membership = SubgraphStructure(torch.zeros(primary.size(0), dtype=torch.long))
@@ -76,10 +78,13 @@ class StructuredMaskedCE(nn.Module):
     inputs, _ = scatter.pairwise_no_pad(dst, inputs, indices)
     print(target.shape, mask.shape, inputs.shape)
     print("rdt", rmsd_indices.dtype)
-    result = (100 * inputs - 100 * target) ** 2
+    print(inputs.min(), inputs.max(), target.min(), target.max())
+    result = (inputs - target) ** 2
     unique, counts = structure.indices.unique(return_counts=True)
     denominator = (counts * (counts - 1)).float().to(result.device)
-    result = torch.sqrt(2 * scatter.add(result, rmsd_indices.to(result.device)) + 1e-6) / torch.sqrt(denominator) / counts.float().to(result.device)
+    result = torch.sqrt(scatter.mean(result, rmsd_indices.to(result.device)))
+    result = result# / torch.sqrt(denominator) / counts.float().to(result.device)
+    #result = torch.sqrt(2 * scatter.add(result, rmsd_indices.to(result.device)) + 1e-6) / torch.sqrt(denominator) / counts.float().to(result.device)
     return result.mean()#torch.sqrt(result.mean() + 1e-6)
 
 class AngleMSE(nn.Module):
@@ -89,13 +94,13 @@ class AngleMSE(nn.Module):
     target = target[mask.nonzero().view(-1)]
     inputs = inputs[mask.nonzero().view(-1)]
     print("ITS", inputs.shape, target.shape)
-    inputs = inputs.view(-1)
-    target = target.view(-1)[:inputs.size(0)]
-    print("ITS0", inputs.shape, target.shape, mask.shape)
+    #inputs = inputs.view(-1)
+    #target = target.view(-1)[:inputs.size(0)]
+    #print("ITS0", inputs.shape, target.shape, mask.shape)
     #return (((inputs - inputs) % (2 * np.pi)) ** 2).mean() / 10
-    result = ((inputs.sin() - target.sin()) ** 2).mean() + ((inputs.cos() - target.cos()) ** 2).mean()
-    result = result / 10.0
-    return 0.0 * result
+    result = ((inputs.sin() - target.sin()) ** 2).mean(dim=1) + ((inputs.cos() - target.cos()) ** 2).mean(dim=1)
+    #result = result * result / (result.sum() + 1e-6)
+    return result.mean()
 
 def valid_callback(trn, inputs, outputs):
   fig = plt.figure()
@@ -107,7 +112,9 @@ def valid_callback(trn, inputs, outputs):
   angles, _ = angle_target
 
   positions = positions.view(-1, 3)
+  #positions = positions[:, :, 1]
   ter = ter.view(-1, 3)
+  #ter = ter[:, 1] # FIXME
 
   positions = positions[(struc.indices == 0).nonzero().view(-1)].numpy()
   ter = ter[(struc.indices == 0).nonzero().view(-1)].numpy()
@@ -164,17 +171,17 @@ def valid_callback(trn, inputs, outputs):
   trn.writer.add_scalar("size", float(ter.shape[0]), trn.step_id)
 
 if __name__ == "__main__":
-  data = RGNNet(sys.argv[2])
+  data = RGNNet(sys.argv[1])
   valid_data = RGNNet(sys.argv[2])
-  net = SDP(TransformerGN(41, depth=3))
+  net = SDP(RGN(41))
   training = SupervisedTraining(
     net, data, valid_data,
     [StructuredMaskedCE(), AngleMSE()],
-    batch_size=16,
+    batch_size=8,
     max_epochs=1000,
-    optimizer=lambda x: torch.optim.Adam(x, lr=0.1),
+    optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
     device="cuda:0",
-    network_name="cgn-test",
+    network_name="rgn-test/no-angles-fixed",
     valid_callback=valid_callback
   )
   final_net = training.train()
