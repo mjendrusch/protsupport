@@ -34,6 +34,8 @@ class RGNNet(ProteinNet):
     angles = result["angles"][:, :500].contiguous()
     mask = result["mask"][:500].view(-1)
 
+    print(angles.min(), angles.max())
+
     mask = mask#torch.repeat_interleave(mask, 3)
 
     membership = SubgraphStructure(torch.zeros(primary.size(0), dtype=torch.long))
@@ -174,9 +176,9 @@ if __name__ == "__main__":
     [StochasticRGNLoss(100), AngleMSE()],
     batch_size=16,
     max_epochs=1000,
-    optimizer=lambda x: torch.optim.Adam(x, lr=0.1),
+    optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
     device="cuda:0",
-    network_name="cgn-test",
+    network_name="rgn-test/no-angles-fixed",
     valid_callback=valid_callback
   )
   final_net = training.train()
