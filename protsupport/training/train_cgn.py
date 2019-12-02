@@ -19,6 +19,8 @@ from protsupport.modules.anglespace import PositionLookup
 from protsupport.modules.rgn import ConvolutionalGN, ResidualGN, RGN, TransformerGN
 from protsupport.data.proteinnet import ProteinNet
 
+from protsupport.modules.losses import StochasticRGNLoss
+
 class RGNNet(ProteinNet):
   def __init__(self, path):
     ProteinNet.__init__(self, path)
@@ -54,33 +56,33 @@ class RGNNet(ProteinNet):
   def __len__(self):
     return ProteinNet.__len__(self)
 
-class StructuredMaskedCE(nn.Module):
-  def __init__(self):
-    super().__init__()
-    #self.loss = nn.MSELoss(reduction="sum")
+# class StructuredMaskedCE(nn.Module):
+#   def __init__(self):
+#     super().__init__()
+#     #self.loss = nn.MSELoss(reduction="sum")
 
-  def forward(self, inputs, target):
-    target, mask, structure = target
-    target = target.view(-1, 3, 3)[:, 1]#target.view(-1, 3)
-    inputs = inputs.view(-1, 3, 3)[:, 1]#inputs.view(-1, 3)
-    dst = lambda x, y: (x - y).norm(dim=1)
-    msk = lambda x, y: (x * y).squeeze(dim=1)
-    indices = structure.indices#torch.repeat_interleave(structure.indices, 3)
-    indices = indices[(mask > 0).nonzero().view(-1)]
-    target = target[(mask > 0).nonzero().view(-1)]
-    inputs = inputs[(mask > 0).nonzero().view(-1)]
-    # unique, counts = indices.unique(return_counts=True)
-    print("idt", indices.dtype)
-    # mask, _ = scatter.pairwise_no_pad(msk, mask, indices)
-    target, rmsd_indices = scatter.pairwise_no_pad(dst, target, indices)
-    inputs, _ = scatter.pairwise_no_pad(dst, inputs, indices)
-    print(target.shape, mask.shape, inputs.shape)
-    print("rdt", rmsd_indices.dtype)
-    result = (100 * inputs - 100 * target) ** 2
-    unique, counts = structure.indices.unique(return_counts=True)
-    denominator = (counts * (counts - 1)).float().to(result.device)
-    result = torch.sqrt(2 * scatter.add(result, rmsd_indices.to(result.device)) + 1e-6) / torch.sqrt(denominator) / counts.float().to(result.device)
-    return result.mean()#torch.sqrt(result.mean() + 1e-6)
+#   def forward(self, inputs, target):
+#     target, mask, structure = target
+#     target = target.view(-1, 3, 3)[:, 1]#target.view(-1, 3)
+#     inputs = inputs.view(-1, 3, 3)[:, 1]#inputs.view(-1, 3)
+#     dst = lambda x, y: (x - y).norm(dim=1)
+#     msk = lambda x, y: (x * y).squeeze(dim=1)
+#     indices = structure.indices#torch.repeat_interleave(structure.indices, 3)
+#     indices = indices[(mask > 0).nonzero().view(-1)]
+#     target = target[(mask > 0).nonzero().view(-1)]
+#     inputs = inputs[(mask > 0).nonzero().view(-1)]
+#     # unique, counts = indices.unique(return_counts=True)
+#     print("idt", indices.dtype)
+#     # mask, _ = scatter.pairwise_no_pad(msk, mask, indices)
+#     target, rmsd_indices = scatter.pairwise_no_pad(dst, target, indices)
+#     inputs, _ = scatter.pairwise_no_pad(dst, inputs, indices)
+#     print(target.shape, mask.shape, inputs.shape)
+#     print("rdt", rmsd_indices.dtype)
+#     result = (100 * inputs - 100 * target) ** 2
+#     unique, counts = structure.indices.unique(return_counts=True)
+#     denominator = (counts * (counts - 1)).float().to(result.device)
+#     result = torch.sqrt(2 * scatter.add(result, rmsd_indices.to(result.device)) + 1e-6) / torch.sqrt(denominator) / counts.float().to(result.device)
+#     return result.mean()#torch.sqrt(result.mean() + 1e-6)
 
 class AngleMSE(nn.Module):
   def forward(self, inputs, target):
@@ -88,88 +90,88 @@ class AngleMSE(nn.Module):
     mask = mask[:inputs.size(0)]
     target = target[mask.nonzero().view(-1)]
     inputs = inputs[mask.nonzero().view(-1)]
-    print("ITS", inputs.shape, target.shape)
+    #print("ITS", inputs.shape, target.shape)
     inputs = inputs.view(-1)
     target = target.view(-1)[:inputs.size(0)]
-    print("ITS0", inputs.shape, target.shape, mask.shape)
+    #print("ITS0", inputs.shape, target.shape, mask.shape)
     #return (((inputs - inputs) % (2 * np.pi)) ** 2).mean() / 10
     result = ((inputs.sin() - target.sin()) ** 2).mean() + ((inputs.cos() - target.cos()) ** 2).mean()
     result = result / 10.0
-    return 0.0 * result
+    return result
 
 def valid_callback(trn, inputs, outputs):
-  fig = plt.figure()
-  ax = fig.add_subplot(111, projection='3d')
+  with torch.no_grad():
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
 
-  positions, pos_target = outputs[0]
-  ter, mask, struc = pos_target
-  angles, angle_target = outputs[1]
-  angles, _ = angle_target
+    positions, pos_target = outputs[0]
+    ter, mask, struc = pos_target
+    angles, angle_target = outputs[1]
+    angles, _ = angle_target
 
-  positions = positions.view(-1, 3)
-  ter = ter.view(-1, 3)
+    positions = positions.view(-1, 3)
+    ter = ter.view(-1, 3)
 
-  positions = positions[(struc.indices == 0).nonzero().view(-1)].numpy()
-  ter = ter[(struc.indices == 0).nonzero().view(-1)].numpy()
+    positions = positions[(struc.indices == 0).nonzero().view(-1)].numpy()
+    ter = ter[(struc.indices == 0).nonzero().view(-1)].numpy()
 
-  dst = np.linalg.norm((positions[None, :] - positions[:, None]), axis=-1)
-  dstt = np.linalg.norm((ter[None, :] - ter[:, None]), axis=-1)
+    dst = np.linalg.norm((positions[None, :] - positions[:, None]), axis=-1)
+    dstt = np.linalg.norm((ter[None, :] - ter[:, None]), axis=-1)
 
-  print(positions.shape, ter.shape)
-  ax.plot(positions[:, 0], positions[:, 1], positions[:, 2])
-  trn.writer.add_figure("output", fig, trn.step_id)
-  
-  plt.close("all")
+    ax.plot(positions[:, 0], positions[:, 1], positions[:, 2])
+    trn.writer.add_figure("output", fig, trn.step_id)
+    
+    plt.close("all")
 
-  fig = plt.figure()
-  ax = fig.add_subplot(111, projection='3d')
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
 
-  ax.plot(ter[:, 0], ter[:, 1], ter[:, 2])
-  trn.writer.add_figure("input", fig, trn.step_id)
-  plt.close("all")
+    ax.plot(ter[:, 0], ter[:, 1], ter[:, 2])
+    trn.writer.add_figure("input", fig, trn.step_id)
+    plt.close("all")
 
-  fig = plt.figure()
-  ax = fig.add_subplot(111)
-  ax.imshow(dst)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.imshow(dst)
 
-  trn.writer.add_figure("heat out", fig, trn.step_id)
-  plt.close("all")
+    trn.writer.add_figure("heat out", fig, trn.step_id)
+    plt.close("all")
 
-  fig = plt.figure()
-  ax = fig.add_subplot(111)
-  ax.imshow(dstt)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.imshow(dstt)
 
-  trn.writer.add_figure("heat in", fig, trn.step_id)
-  plt.close("all")
+    trn.writer.add_figure("heat in", fig, trn.step_id)
+    plt.close("all")
 
-  fig = plt.figure()
-  ax = fig.add_subplot(111)
-  ax.imshow(abs(dstt - dst))
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.imshow(abs(dstt - dst))
 
-  trn.writer.add_figure("heat del", fig, trn.step_id)
-  plt.close("all")
+    trn.writer.add_figure("heat del", fig, trn.step_id)
+    plt.close("all")
 
-  fig = plt.figure()
-  ax = fig.add_subplot(111)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
 
-  position_lookup = PositionLookup()
-  re_ter = position_lookup(angles[(struc.indices == 0).nonzero().view(-1)], struc.indices[(struc.indices == 0).nonzero().view(-1)])[0].view(-1, 3).numpy()
+    position_lookup = PositionLookup()
+    re_ter = position_lookup(angles[(struc.indices == 0).nonzero().view(-1)], struc.indices[(struc.indices == 0).nonzero().view(-1)])[0].view(-1, 3).numpy()
 
-  dsttt = np.linalg.norm((re_ter[None, :] - re_ter[:, None]), axis=-1)
+    dsttt = np.linalg.norm((re_ter[None, :] - re_ter[:, None]), axis=-1)
 
-  ax.imshow(dsttt)
-  trn.writer.add_figure("heat expected", fig, trn.step_id)
+    ax.imshow(dsttt)
+    trn.writer.add_figure("heat expected", fig, trn.step_id)
 
-  plt.close("all")
-  trn.writer.add_scalar("size", float(ter.shape[0]), trn.step_id)
+    plt.close("all")
+    trn.writer.add_scalar("size", float(ter.shape[0]), trn.step_id)
 
 if __name__ == "__main__":
-  data = RGNNet(sys.argv[2])
+  data = RGNNet(sys.argv[1])
   valid_data = RGNNet(sys.argv[2])
-  net = SDP(TransformerGN(41, depth=3))
+  net = SDP(RGN(41))
   training = SupervisedTraining(
     net, data, valid_data,
-    [StructuredMaskedCE(), AngleMSE()],
+    [StochasticRGNLoss(100), AngleMSE()],
     batch_size=16,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=0.1),
@@ -178,4 +180,3 @@ if __name__ == "__main__":
     valid_callback=valid_callback
   )
   final_net = training.train()
-
