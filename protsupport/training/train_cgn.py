@@ -19,7 +19,7 @@ from protsupport.modules.anglespace import PositionLookup
 from protsupport.modules.rgn import ConvolutionalGN, ResidualGN, RGN, TransformerGN
 from protsupport.data.proteinnet import ProteinNet
 
-from protsupport.modules.losses import StochasticRGNLoss
+from protsupport.modules.losses import StochasticRGNLoss, WeightedAngleLoss
 
 class RGNNet(ProteinNet):
   def __init__(self, path):
@@ -173,7 +173,7 @@ if __name__ == "__main__":
   net = SDP(RGN(41))
   training = SupervisedTraining(
     net, data, valid_data,
-    [StochasticRGNLoss(100), AngleMSE()],
+    [StochasticRGNLoss(100), WeightedAngleLoss(10)],
     batch_size=16,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
