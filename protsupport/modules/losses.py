@@ -56,7 +56,6 @@ class WeightedAngleLoss(nn.Module):
   def __init__(self, bins):
     super().__init__()
     self.bins = bins
-    #self.counts = torch.ones(2, bins, bins)
 
     offset = 2 * np.pi / bins
     self.bin_position = [-np.pi + offset / 2 + idx * offset for idx in range(bins)]
@@ -79,6 +78,10 @@ class WeightedAngleLoss(nn.Module):
     return counts
 
   def forward(self, inputs, targets):
+    if isinstance(targets, (list, tuple)):
+      targets, mask = targets
+      inputs = inputs[mask.nonzero().view(-1)]
+      targets = targets[mask.nonzero().view(-1)]
     phi_bin = self.bin_angle(targets[:, 0])
     psi_bin = self.bin_angle(targets[:, 1])
     omega_bin = self.bin_omega(targets[:, 2])
