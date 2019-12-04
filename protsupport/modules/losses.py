@@ -27,9 +27,10 @@ class RGNLoss(nn.Module):
     return result.mean()
 
 class StochasticRGNLoss(nn.Module):
-  def __init__(self, samples):
+  def __init__(self, samples, relative=False):
     super().__init__()
     self.samples = samples
+    self.relative = relative
 
   def pairs(self, indices):
     _, counts = indices.unique(return_counts=True)
@@ -50,7 +51,12 @@ class StochasticRGNLoss(nn.Module):
     left, right = self.pairs(indices)
     in_distance = (inputs[left] - inputs[right]).norm(dim=1)
     target_distance = (target[left] - target[right]).norm(dim=1)
-    return torch.mean((in_distance - target_distance) ** 2)
+    result = (in_distance - target_distance)
+    if self.relative:
+      denominator = target_distance + (target_distance == 0).float()
+      result = result / denominator
+    result = result ** 2
+    return result.mean()
 
 class WeightedAngleLoss(nn.Module):
   def __init__(self, bins):

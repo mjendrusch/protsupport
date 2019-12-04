@@ -31,7 +31,7 @@ class RGNNet(ProteinNet):
     evolutionary = result["evolutionary"][:, :500].t()
     tertiary = result["tertiary"] / 100
     tertiary = tertiary[[0, 1, 3], :, :].permute(2, 0, 1).contiguous()[:500].view(-1, 3)
-    angles = result["angles"][:, :500].contiguous()
+    angles = result["angles"].contiguous().view(-1, 3)[:500].contiguous()
     mask = result["mask"][:500].view(-1)
 
     print(angles.min(), angles.max())
@@ -53,7 +53,7 @@ class RGNNet(ProteinNet):
 
     print("tsize", angles.size())
 
-    return inputs, outputs, (PackedTensor(angles.t(), split=False), PackedTensor(mask.view(-1), split=False))
+    return inputs, outputs, (PackedTensor(angles, split=False), PackedTensor(mask.view(-1), split=False))
 
   def __len__(self):
     return ProteinNet.__len__(self)
@@ -173,12 +173,12 @@ if __name__ == "__main__":
   net = SDP(RGN(41))
   training = SupervisedTraining(
     net, data, valid_data,
-    [StochasticRGNLoss(100), WeightedAngleLoss(10)],
-    batch_size=16,
+    [StochasticRGNLoss(100, relative=True), AngleMSE()],
+    batch_size=64,
     max_epochs=1000,
-    optimizer=lambda x: torch.optim.Adam(x, lr=1e-5),
+    optimizer=lambda x: torch.optim.Adam(x, lr=5e-5),
     device="cuda:0",
-    network_name="rgn-test/no-angles-fixed",
+    network_name="rgn-test/stochastic-5-e-5-fixactivation",
     valid_callback=valid_callback
   )
   final_net = training.train()
