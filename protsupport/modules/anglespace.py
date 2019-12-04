@@ -193,6 +193,39 @@ class PositionLookup(nn.Module):
     result = self.stitch(positions, fragment_indices, indices)
     return result, indices
 
+class LocalPositionLookup(PositionLookup):
+  def init_local(self, angles, previous, idx):
+    # position cache:
+    if idx == 0:
+      pos = torch.tensor([
+        [-np.sqrt(0.5), np.sqrt(1.5), 0.0],
+        [-np.sqrt(2),   0.0,          0.0],
+        [0.0,           0.0,          0.0]
+      ]).to(angles.device)
+      pos = pos.unsqueeze(0).expand(
+        angles.size(0), *pos.shape
+      ).contiguous()
+    else:
+      pos = previous[:, idx - 1]
+    pos = pos.unsqueeze(-1) # make this a proper vector
+    # m vector cache:
+    ms = pos[:, 1:] - pos[:, :-1]
+    return pos, ms
+
+  def forward(self, angles, previous, idx):
+    snr = self.to_snr(angles)
+    pos, ms = self.init_local(angles, previous, idx)
+    positions = []
+    for idy in range(3):
+      new_position, pos, ms = self.move(
+        idy, snr.unsqueeze(-1), pos, ms
+      )
+      positions.append(new_position.unsqueeze(1).squeeze(dim=-1))
+    positions = torch.cat(positions, dim=1)
+    if idx == 0:
+      positions = positions - positions[:, :1]
+    return positions
+
 class DistanceLookup(PositionLookup):
   def forward(self, inputs, indices):
     positions, indices = super().forward(inputs, indices)
