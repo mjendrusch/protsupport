@@ -206,7 +206,7 @@ class LocalPositionLookup(PositionLookup):
         angles.size(0), *pos.shape
       ).contiguous()
     else:
-      pos = previous[:, idx - 1]
+      pos = previous[:, idx - 1].clone()
     pos = pos.unsqueeze(-1) # make this a proper vector
     # m vector cache:
     ms = pos[:, 1:] - pos[:, :-1]

@@ -9,6 +9,7 @@ from torchsupport.structured import scatter
 class RGNLoss(nn.Module):
   def forward(self, inputs, target):
     target, mask, structure = target
+    mask = mask.view(-1)
     target = target.view(-1, 3, 3)[:, 1]
     inputs = inputs.view(-1, 3, 3)[:, 1]
     dst = lambda x, y: (x - y).norm(dim=1)
@@ -26,6 +27,44 @@ class RGNLoss(nn.Module):
     result = result / counts.float().to(result.device)
     return result.mean()
 
+class StochasticFullRGNLoss(nn.Module):
+  def __init__(self, samples, relative=False):
+    super().__init__()
+    self.samples = samples
+    self.relative = relative
+
+  def positions(self, indices):
+    _, counts = indices.unique(return_counts=True)
+    result = []
+    total = 0
+    for count in counts:
+      result.append(torch.randint(total, total + count, (1, self.samples)))
+      total += count
+    result = torch.cat(result, dim=0)
+    return result
+
+  def forward(self, inputs, target):
+    target, mask, structure = target
+    mask = mask.view(-1)
+    target = target.view(-1, 3, 3)[:, 1]
+    inputs = inputs.view(-1, 3, 3)[:, 1]
+    indices = structure.indices
+    indices = indices[(mask > 0).nonzero().view(-1)]
+    target = target[(mask > 0).nonzero().view(-1)]
+    inputs = inputs[(mask > 0).nonzero().view(-1)]
+    positions = self.positions(indices)
+    inputs = inputs[positions]
+    target = target[positions]
+    print("LESHAPE", inputs.shape, target.shape)
+    in_distance = (inputs[:, None, :, :] - inputs[:, :, None, :]).norm(dim=-1)
+    target_distance = (target[:, None, :, :] - target[:, :, None, :]).norm(dim=-1)
+    result = (in_distance - target_distance)
+    if self.relative:
+      denominator = target_distance + (target_distance == 0).float()
+      result = result / denominator
+    result = result ** 2
+    return result.mean()
+
 class StochasticRGNLoss(nn.Module):
   def __init__(self, samples, relative=False):
     super().__init__()
@@ -35,13 +74,16 @@ class StochasticRGNLoss(nn.Module):
   def pairs(self, indices):
     _, counts = indices.unique(return_counts=True)
     result = []
+    total = 0
     for count in counts:
-      result.append(torch.randint(count, (self.samples, 2)))
+      result.append(torch.randint(total, total + count, (self.samples, 2)))
+      total += count
     result = torch.cat(result, dim=0)
     return result[:, 0], result[:, 1]
 
   def forward(self, inputs, target):
     target, mask, structure = target
+    mask = mask.view(-1)
     target = target.view(-1, 3, 3)[:, 1]
     inputs = inputs.view(-1, 3, 3)[:, 1]
     indices = structure.indices

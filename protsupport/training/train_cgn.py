@@ -17,9 +17,10 @@ from torchsupport.structured import DataParallel as SDP
 
 from protsupport.modules.anglespace import PositionLookup
 from protsupport.modules.rgn import ConvolutionalGN, ResidualGN, RGN, TransformerGN
+from protsupport.modules.structure_rnn import StructureRNN
 from protsupport.data.proteinnet import ProteinNet
 
-from protsupport.modules.losses import StochasticRGNLoss, WeightedAngleLoss
+from protsupport.modules.losses import RGNLoss, StochasticRGNLoss, StochasticFullRGNLoss, WeightedAngleLoss
 
 class RGNNet(ProteinNet):
   def __init__(self, path):
@@ -97,8 +98,8 @@ class AngleMSE(nn.Module):
     target = target.view(-1)[:inputs.size(0)]
     #print("ITS0", inputs.shape, target.shape, mask.shape)
     #return (((inputs - inputs) % (2 * np.pi)) ** 2).mean() / 10
-    result = ((inputs.sin() - target.sin()) ** 2).mean() + ((inputs.cos() - target.cos()) ** 2).mean()
-    result = result / 10.0
+    result = (1 - (inputs - target).cos()).mean()
+    result = result
     return result
 
 def valid_callback(trn, inputs, outputs):
@@ -170,15 +171,15 @@ def valid_callback(trn, inputs, outputs):
 if __name__ == "__main__":
   data = RGNNet(sys.argv[1])
   valid_data = RGNNet(sys.argv[2])
-  net = SDP(RGN(41))
+  net = SDP(StructureRNN(41, distance_size=9, depth=1))#SDP(RGN(41))
   training = SupervisedTraining(
     net, data, valid_data,
-    [StochasticRGNLoss(100, relative=True), AngleMSE()],
-    batch_size=64,
+    [RGNLoss(), AngleMSE()],
+    batch_size=32,
     max_epochs=1000,
-    optimizer=lambda x: torch.optim.Adam(x, lr=5e-5),
+    optimizer=lambda x: torch.optim.Adam(x, lr=5e-6),
     device="cuda:0",
-    network_name="rgn-test/stochastic-5-e-5-fixactivation",
+    network_name="rgn-test/stochastic-5-e-6-hopefully-fixed-attention-full-loss-more-batch-noangle-plotted",
     valid_callback=valid_callback
   )
   final_net = training.train()
