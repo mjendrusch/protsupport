@@ -95,8 +95,9 @@ class StructuredTransformerTraining(SupervisedTraining):
     self.optimizer.param_groups[0]["lr"] = learning_rate
 
 if __name__ == "__main__":
-  data = TransformerNet(sys.argv[1], num_neighbours=30)
-  valid_data = TransformerNet(sys.argv[2], num_neighbours=30)
+  num_neighbours = 30 if len(sys.argv) < 4 else int(sys.argv[3])
+  data = TransformerNet(sys.argv[1], num_neighbours=num_neighbours)
+  valid_data = TransformerNet(sys.argv[2], num_neighbours=num_neighbours)
   net = SDP(StructuredTransformer(
     6, 20, 128, 10, 64,
     attention_size=128, heads=8,
