@@ -5,3 +5,5 @@ XDG_CACHE_HOME
 runs
 new-runs
 *.ipynb
+*.torch
+events.*
