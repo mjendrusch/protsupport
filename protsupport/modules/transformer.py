@@ -9,8 +9,9 @@ import torchsupport.structured as ts
 class StructuredTransformerEncoderBlock(nn.Module):
   def __init__(self, size, distance_size, attention_size=128, heads=128,
                hidden_size=128, mlp_depth=3, activation=func.relu_,
-               batch_norm=False, dropout=0.1):
+               batch_norm=False, dropout=0.1, pre_norm=True):
     super(StructuredTransformerEncoderBlock, self).__init__()
+    self.pre_norm = pre_norm
     self.batch_norm = batch_norm
     self.attention = ts.NeighbourDotMultiHeadAttention(
       size + distance_size, size, attention_size, query_size=size, heads=heads
@@ -33,22 +34,29 @@ class StructuredTransformerEncoderBlock(nn.Module):
       self.local_bn = nn.LayerNorm(size)
 
   def forward(self, features, structure):
-    inputs = self.activation(self.bn(features))
-    local = self.activation(self.local_bn(self.local(inputs)))
-    attention = self.attention(local, local, structure)
-    return features + self.dropout(attention)
+    if self.pre_norm:
+      normed = self.bn(features)
+      out = self.activation(features + self.attention(normed, normed, structure))
+      out = self.activation(out + self.local(self.local_bn(out)))
+    else:
+      out = features + self.attention(features, features, structure)
+      out = self.activation(self.bn(out))
+      out = out + self.local(out)
+      out = self.activation(self.local_bn(out))
+    return out
 
 class StructuredTransformerEncoder(nn.Module):
   def __init__(self, in_size, size, distance_size, attention_size=128,
                heads=128, hidden_size=128, depth=3, mlp_depth=3,
-               activation=func.relu_, batch_norm=False):
+               activation=func.relu_, batch_norm=False, pre_norm=True):
     super(StructuredTransformerEncoder, self).__init__()
     self.preprocessor = nn.Linear(in_size, size)
     self.blocks = nn.ModuleList([
       StructuredTransformerEncoderBlock(
         size, distance_size,
         attention_size=attention_size, heads=heads, hidden_size=hidden_size,
-        mlp_depth=mlp_depth, activation=activation, batch_norm=batch_norm
+        mlp_depth=mlp_depth, activation=activation, batch_norm=batch_norm,
+        pre_norm=pre_norm
       )
       for _ in range(depth)
     ])
@@ -62,9 +70,10 @@ class StructuredTransformerEncoder(nn.Module):
 class StructuredTransformerDecoderBlock(nn.Module):
   def __init__(self, size, distance_size, sequence_size, attention_size=128,
                heads=128, hidden_size=128, mlp_depth=3, activation=func.relu_,
-               batch_norm=False, adaptive=None, dropout=0.1):
+               batch_norm=False, adaptive=None, dropout=0.1, pre_norm=True):
     super(StructuredTransformerDecoderBlock, self).__init__()
     self.batch_norm = batch_norm
+    self.pre_norm = pre_norm
     self.adaptive = adaptive
     self.attention = ts.NeighbourDotMultiHeadAttention(
       size + distance_size + sequence_size, size, attention_size, query_size=size, heads=heads
@@ -95,16 +104,22 @@ class StructuredTransformerDecoderBlock(nn.Module):
     if self.adaptive:
       features, latent = features
       latent = [latent]
-    inputs = self.activation(self.bn(features, *latent))
-    local = self.activation(self.local_bn(self.local(inputs), *latent))
-    attention = self.dropout(self.attention(local, local, structure))
-    return features + attention
+    if self.pre_norm:
+      normed = self.bn(features, *latent)
+      out = self.activation(features + self.attention(normed, normed, structure))
+      out = self.activation(out + self.local(self.local_bn(out, *latent)))
+    else:
+      out = features + self.attention(features, features, structure)
+      out = self.activation(self.bn(out, *latent))
+      out = out + self.local(out)
+      out = self.activation(self.local_bn(out, *latent))
+    return out
 
 class StructuredTransformerDecoder(nn.Module):
   def __init__(self, out_size, size, distance_size, sequence_size,
                attention_size=128, heads=128, hidden_size=128,
                depth=3, mlp_depth=3, activation=func.relu_,
-               batch_norm=False, adaptive=None):
+               batch_norm=False, adaptive=None, pre_norm=True):
     super(StructuredTransformerDecoder, self).__init__()
     self.postprocessor = nn.Linear(size, out_size)
     self.adaptive = adaptive
@@ -113,7 +128,7 @@ class StructuredTransformerDecoder(nn.Module):
         size, distance_size, sequence_size,
         attention_size=attention_size, heads=heads, hidden_size=hidden_size,
         mlp_depth=mlp_depth, activation=activation, batch_norm=batch_norm,
-        adaptive=adaptive
+        adaptive=adaptive, pre_norm=pre_norm
       )
       for _ in range(depth)
     ])
