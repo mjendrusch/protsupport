@@ -7,3 +7,6 @@ new-runs
 *.ipynb
 *.torch
 events.*
+.pytest_cache/
+.idea/
+
