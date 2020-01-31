@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as func
 
-from protsupport.utils.geometry import compute_rotation_matrix
+from protsupport.utils.geometry import compute_rotation_matrix, compute_dihedrals
 
 class SingleBackrub():
   def __init__(self, phi, psi, tau):
@@ -49,4 +49,5 @@ class Backrub():
     out = inputs
     for _ in range(self.n_moves):
       out = self.backrub(out)
-    return out
+    angles, msk = compute_dihedrals(out.reshape(-1, 3).numpy(), np.ones(out.size(0), dtype=np.uint8))
+    return out, torch.tensor(angles, dtype=torch.float)

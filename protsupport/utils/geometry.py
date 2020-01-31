@@ -8,6 +8,23 @@ def compute_dihedral_angle(a, b, c):
   b0 = b / np.linalg.norm(b)
   return np.arctan2(np.cross(c1, c2).dot(b0), c1.dot(c2))
 
+def compute_dihedrals(tertiary, mask):
+  angles = np.zeros(len(tertiary), dtype=np.float32)
+  angle_mask = np.zeros(len(tertiary), dtype=np.bool)
+  for idx, pos in enumerate(tertiary):
+    valid = idx // 3 < len(mask) - 1 and mask[idx // 3] and mask[idx // 3 + 1]
+    if valid:
+      vectors = tertiary[idx + 1:idx + 4] - tertiary[idx:idx + 3]
+      vnorm = np.linalg.norm(vectors, axis=1)
+      if (vnorm == 0).any():
+        continue
+      angle = compute_dihedral_angle(*vectors)
+      angles[idx + 1] = angle
+  angles = angles.reshape(-1)
+  angles = np.roll(angles, 1, axis=0).reshape(-1, 3).T
+  angle_mask = angle_mask.reshape(-1, 3).T
+  return angles, angle_mask
+
 def _assign_psea_aux(distances, dihedral, angle,
                      distance_spec, dihedral_spec, angle_spec):
   good = True

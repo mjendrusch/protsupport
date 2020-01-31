@@ -1,5 +1,5 @@
 import numpy as np
-from protsupport.utils.geometry import compute_dihedral_angle, compute_rotation
+from protsupport.utils.geometry import compute_dihedral_angle, compute_rotation, compute_dihedrals
 
 AA_ID_DICT = {'A': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5, 'G': 6, 'H': 7, 'I': 8, 'K': 9,
               'L': 10, 'M': 11, 'N': 12, 'P': 13, 'Q': 14, 'R': 15, 'S': 16, 'T': 17,
@@ -51,33 +51,6 @@ def compute_inputs(primary, evolutionary, secondary, tertiary, mask):
   # print(np.linalg.norm(tertiary[0, :] - tertiary[1, :]))
   mask = np.array(mask)
   return primary, evolutionary, secondary, tertiary, mask
-
-def compute_dihedrals(tertiary, mask):
-  angles = np.zeros(len(tertiary), dtype=np.float32)
-  angle_mask = np.zeros(len(tertiary), dtype=np.bool)
-  for idx, pos in enumerate(tertiary):
-    valid = idx // 3 < len(mask) - 1 and mask[idx // 3] and mask[idx // 3 + 1]
-    if valid:
-      vectors = tertiary[idx + 1:idx + 4] - tertiary[idx:idx + 3]
-      vnorm = np.linalg.norm(vectors, axis=1)
-      if (vnorm == 0).any():
-        continue
-      angle = compute_dihedral_angle(*vectors)
-      angles[idx + 1] = angle
-    # valid = idx // 3 < len(mask) - 1 and mask[idx // 3] and mask[idx // 3 + 1]
-    # if valid:
-    #   vectors = tertiary[idx + 1:idx + 4] - tertiary[idx:idx + 3]
-    #   vnorm = np.linalg.norm(vectors, axis=1)
-    #   some_equal = (vnorm == 0.0).any()
-    #   if not some_equal:
-    #     angle = compute_dihedral_angle(*vectors)
-    #     angles[idx + 1] = angle
-    #   valid = valid and not some_equal
-    #   angle_mask[idx + 1] = valid
-  angles = angles.reshape(-1)
-  angles = np.roll(angles, 1, axis=0).reshape(-1, 3).T
-  angle_mask = angle_mask.reshape(-1, 3).T
-  return angles, angle_mask
 
 def compute_cb(tertiary, mask):
   tertiary = tertiary.reshape(-1, 3, 3)
