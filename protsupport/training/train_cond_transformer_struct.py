@@ -142,6 +142,8 @@ class CondSeqResampleNet(CondTransformerNet):
 
     # Prepare orientation infos
     orientation = self.ors[window, :, :].view(seq_len, -1)
+
+    tertiary = self.ters[:, :, window]
     distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
     distances = distances[:, 1] / 100
     angles = angles.transpose(0, 1)
@@ -218,8 +220,8 @@ if __name__ == "__main__":
     batch_size=8,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x), # LR scheduled 
-    # device="cuda:0",
-    network_name="cond-structured-transformer",
+    device="cuda:0",
+    network_name="cond-structured-transformer-1/does-it-melt-1",
     valid_callback=valid_callback,
     report_interval=10
   ).load()
