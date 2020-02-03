@@ -27,8 +27,7 @@ def valid_callback(training, data, predictions):
   fig, ax = plt.subplots()
   ax.imshow(confusion / confusion.sum(dim=1, keepdim=True), cmap="Reds")
   training.writer.add_figure("confusion", fig, training.step_id)
-  # for name, parameter in training.net.named_parameters():
-  #   training.writer.add_histogram(f"phist {name}", parameter.detach().cpu().numpy(), training.step_id)
+
 
 class CondTransformerNet(ProteinNetKNN):
   def __init__(self, path, num_neighbours=20, n_jobs=1, n_backrub=10,
@@ -50,7 +49,8 @@ class CondTransformerNet(ProteinNetKNN):
     seq_len = window.stop - window.start
 
     # Make me a mask
-    mask = np.random.choice(seq_len, size=np.random.randint(np.ceil(0.05*seq_len), seq_len), replace=True)
+    # Predict at least 5% of the sequence up to the whole seq
+    mask = np.random.choice(seq_len, size=np.random.randint(seq_len // 20, seq_len), replace=False)
     mask = torch.tensor(mask, dtype=torch.long)
     mask_binary = torch.zeros(seq_len, dtype=torch.uint8)
     mask_binary[mask] = 1
@@ -104,6 +104,80 @@ class CondTransformerNet(ProteinNetKNN):
   def __len__(self):
     return ProteinNet.__len__(self)
 
+
+class CondSeqResampleNet(CondTransformerNet):
+  """
+  Similar to CondTransformerNet but with resampling of the sequence based on evolutionary information
+  """
+  def __init__(self, *args, desired_resample=0.15, **kwargs):
+    super(CondSeqResampleNet, self).__init__(*args, **kwargs)
+    self.desired_resample = desired_resample
+
+  def __getitem__(self, index):
+    # Extract the boundaries of a whole protein
+    window = slice(self.index[index], self.index[index + 1])
+    seq_len = window.stop - window.start
+
+    # Make me a mask (used for the conditional training)
+    # Predict at least 5% of the sequence up to the whole seq
+    mask = np.random.choice(seq_len, size=np.random.randint(seq_len // 20, seq_len), replace=False)
+    mask = torch.tensor(mask, dtype=torch.long)
+    mask_binary = torch.zeros(seq_len, dtype=torch.uint8)
+    mask_binary[mask] = 1
+
+    # Get sequence info
+    primary = self.pris[window] - 1
+
+    # Do the resampling
+    to_resample = np.random.choice(seq_len, size=(self.desired_resample * seq_len.float()).long().numpy(), replace=False)
+    pssm = self.evos[:20,window][:,to_resample]
+    resampled = torch.multinomial(pssm.t(), 1).flatten()
+    primary[to_resample] = resampled
+
+    # Run the masking for conditional transformer training
+    primary_masked = primary.clone()
+    primary_masked[mask] = 20
+    primary_onehot = torch.zeros((seq_len, 21), dtype=torch.float)
+    primary_onehot[torch.arange(seq_len), primary_masked] = 1
+
+    # Prepare orientation infos
+    orientation = self.ors[window, :, :].view(seq_len, -1)
+
+    tertiary = self.ters[:, :, window]
+    distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
+    distances = distances[:, 1] / 100
+    angles = angles.transpose(0, 1)
+    indices = torch.tensor(
+      range(window.start, window.stop),
+      dtype=torch.float
+    )
+    indices = indices.view(-1, 1)
+    orientation = torch.cat((distances, orientation, indices), dim=1)
+
+    # Prepare neighborhood structure
+    inds = self.inds[window]
+    neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
+
+    # Prepare angle features
+    sin = torch.sin(angles)
+    cos = torch.cos(angles)
+    angle_features = torch.cat((sin, cos), dim=1)
+
+    inputs = (
+      PackedTensor(angle_features),
+      PackedTensor(primary_onehot),
+      PackedTensor(orientation),
+      neighbours
+    )
+
+    targets = (
+      PackedTensor(primary, split=False),
+      PackedTensor(mask_binary, split=False)
+      )
+
+    return inputs, targets
+
+
 class MaskedLoss(nn.Module):
   def __init__(self):
     super().__init__()
@@ -122,6 +196,7 @@ class ConditionalStructuredTransformerTraining(SupervisedTraining):
   def each_step(self):
     super().each_step()
     # Schedule from 'Attention is all you need'
+    super(ConditionalStructuredTransformerTraining, self).each_step()
     learning_rate = torch.pow(torch.tensor(128.0), -0.5)
     step_num = torch.tensor(float(self.step_id + 1))
     learning_rate *= min(
@@ -131,8 +206,8 @@ class ConditionalStructuredTransformerTraining(SupervisedTraining):
     self.optimizer.param_groups[0]["lr"] = learning_rate
 
 if __name__ == "__main__":
-  data = CondTransformerNet(sys.argv[1], num_neighbours=15)
-  valid_data = CondTransformerNet(sys.argv[2], num_neighbours=15)
+  data = CondSeqResampleNet(sys.argv[1], num_neighbours=15, n_backrub=10)
+  valid_data = CondTransformerNet(sys.argv[2], num_neighbours=15, n_backrub=0) # Validation with out augmentation
   net = SDP(
     ConditionalStructuredTransformer(
     6, 128, 10, 
@@ -146,7 +221,7 @@ if __name__ == "__main__":
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x), # LR scheduled 
     device="cuda:0",
-    network_name="cond-structured-transformer/15-6-drop-10-rub",
+    network_name="cond-structured-transformer/15-6-drop-10-rub-pssm-fixed",
     valid_callback=valid_callback,
     report_interval=10
   ).load()
