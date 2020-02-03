@@ -16,6 +16,7 @@ from protsupport.training.train_sequence_ebm import DDP
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
 from protsupport.modules.cond_structured_transformer import ConditionalStructuredTransformer
+from protsupport.modules.backrub import Backrub
 
 def valid_callback(training, data, predictions):
   inputs, labels = data
@@ -30,12 +31,14 @@ def valid_callback(training, data, predictions):
   #   training.writer.add_histogram(f"phist {name}", parameter.detach().cpu().numpy(), training.step_id)
 
 class CondTransformerNet(ProteinNetKNN):
-  def __init__(self, path, num_neighbours=20, n_jobs=1, cache=True):
+  def __init__(self, path, num_neighbours=20, n_jobs=1, n_backrub=10,
+               phi=0.2 * np.pi, psi=0.2 * np.pi, tau=0.2 * np.pi, cache=True):
     super(CondTransformerNet, self).__init__(
       path,
       num_neighbours=num_neighbours,
       n_jobs=n_jobs, cache=cache
     )
+    self.backrub = Backrub(n_moves=n_backrub, phi=phi, psi=psi, tau=tau)
     self.ors = torch.tensor(
       orientation(self.ters[1].numpy() / 100).transpose(2, 0, 1),
       dtype=torch.float
@@ -58,11 +61,16 @@ class CondTransformerNet(ProteinNetKNN):
     primary_masked = primary.clone()
     primary_masked[mask] = 20
     primary_onehot = torch.zeros((seq_len, 21), dtype=torch.float)
-    primary_onehot[torch.arange(seq_len), primary_masked]
+    primary_onehot[torch.arange(seq_len), primary_masked] = 1
 
     # Prepare orientation infos
     orientation = self.ors[window, :, :].view(seq_len, -1)
-    distances = self.ters[1, :, window].transpose(0, 1) / 100
+
+    tertiary = self.ters[:, :, window]
+    distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
+    distances = distances[:, 1] / 100
+    angles = angles.transpose(0, 1)
+
     indices = torch.tensor(
       range(window.start, window.stop),
       dtype=torch.float
@@ -75,7 +83,6 @@ class CondTransformerNet(ProteinNetKNN):
     neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
 
     # Prepare angle features
-    angles = self.angs[:, window].transpose(0, 1)
     sin = torch.sin(angles)
     cos = torch.cos(angles)
     angle_features = torch.cat((sin, cos), dim=1)
@@ -113,6 +120,7 @@ class ConditionalStructuredTransformerTraining(SupervisedTraining):
   Train a transformer model mapping structure to sequence for each position as a conditional probability of its surroundings
   """
   def each_step(self):
+    super().each_step()
     # Schedule from 'Attention is all you need'
     learning_rate = torch.pow(torch.tensor(128.0), -0.5)
     step_num = torch.tensor(float(self.step_id + 1))
@@ -123,13 +131,13 @@ class ConditionalStructuredTransformerTraining(SupervisedTraining):
     self.optimizer.param_groups[0]["lr"] = learning_rate
 
 if __name__ == "__main__":
-  data = CondTransformerNet(sys.argv[1], num_neighbours=30)
-  valid_data = CondTransformerNet(sys.argv[2], num_neighbours=30)
-  net = DDP(# SDP(
+  data = CondTransformerNet(sys.argv[1], num_neighbours=15)
+  valid_data = CondTransformerNet(sys.argv[2], num_neighbours=15)
+  net = SDP(
     ConditionalStructuredTransformer(
     6, 128, 10, 
     attention_size=128, heads=8,
-    mlp_depth=2, depth=3, batch_norm=True
+    mlp_depth=2, depth=6, batch_norm=True
   ))
   training = ConditionalStructuredTransformerTraining(
     net, data, valid_data,
@@ -137,9 +145,9 @@ if __name__ == "__main__":
     batch_size=8,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x), # LR scheduled 
-    # device="cuda:0",
-    network_name="cond-structured-transformer",
+    device="cuda:0",
+    network_name="cond-structured-transformer/15-6-drop-10-rub",
     valid_callback=valid_callback,
-    report_interval=1
+    report_interval=10
   ).load()
   final_net = training.train()
