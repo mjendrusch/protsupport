@@ -13,11 +13,16 @@ class SingleBackrub():
     self.tau = tau
 
   def __call__(self, inputs):
+    inputs = inputs.clone()
+
     fst = torch.randint(inputs.size(0) - 2, (1,))[0]
     snd = fst + 2
 
     small = inputs[fst + 1:fst + 3, 1] - inputs[fst:fst + 2, 1]
     large = inputs[snd, 1] - inputs[fst, 1]
+
+    if small[0].norm() == 0.0 or small[1].norm() == 0.0 or large.norm() == 0.0:
+      return inputs
 
     phi = (2 * torch.rand((1,))[0] - 1) * self.phi
     psi = (2 * torch.rand((1,))[0] - 1) * self.psi
@@ -35,6 +40,9 @@ class SingleBackrub():
     changed[0:2] = changed[0:2] @ phi_mat
     changed[2:4] = (changed[2:4] - changed[2, 1]) @ psi_mat + changed[2, 1]
     changed = changed + offset
+
+    if torch.isnan(changed).any():
+      return inputs
 
     inputs[fst:fst + 4] = torch.tensor(changed)
 
