@@ -88,13 +88,17 @@ def compute_rotation(vector, axis, angle):
   return rot @ vector
 
 def vector_angle(v1, v2):
+  n1 = np.linalg.norm(v1)
+  n2 = np.linalg.norm(v2)
+  if n1 == 0.0 or n2 == 0.0:
+    return 0.0
   v1 = v1 / np.linalg.norm(v1)
   v2 = v2 / np.linalg.norm(v2)
   dot = np.dot(v1, v2)
   cross = np.linalg.norm(np.cross(v1, v2))
   return np.arctan2(cross, dot)
 
-def orientation(positions):
+def _np_orientation(positions):
   u = positions[:, 1:] - positions[:, :-1]
   u = u / (np.linalg.norm(u, axis=0) + 1e-6)
   b = u[:, :-1] - u[:, 1:]
@@ -114,6 +118,34 @@ def orientation(positions):
   if np.isnan(result).any(): print("bad result")
 
   return result
+
+def _torch_orientation(positions):
+  u = positions[:, 1:] - positions[:, :-1]
+  u = u / (u.norm(dim=0) + 1e-6)
+  b = u[:, :-1] - u[:, 1:]
+  b = b / (b.norm(dim=0) + 1e-6)
+  n = torch.cross(u[:, :-1].t(), u[:, 1:].t()).t()
+  n = n / (n.norm(dim=0) + 1e-6)
+  bxn = torch.cross(b.t(), n.t()).t()
+
+  b_edge = torch.tensor([1, 0, 0], dtype=positions.dtype).view(3, 1)
+  n_edge = torch.tensor([0, 1, 0], dtype=positions.dtype).view(3, 1)
+  bxn_edge = torch.tensor([0, 0, 1], dtype=positions.dtype).view(3, 1)
+  edge = torch.cat((b_edge, n_edge, bxn_edge), dim=0).to(positions.device)
+
+  result = torch.cat((b, n, bxn), dim=0)
+  result = torch.cat((edge, result, edge), dim=1)
+  result = result.view(3, 3, -1)
+  if torch.isnan(result).any(): print("bad result")
+
+  return result
+
+def orientation(positions):
+  if torch.is_tensor(positions):
+    return _torch_orientation(positions)
+  if isinstance(positions, np.ndarray):
+    return _np_orientation(positions)
+  raise TypeError(f"Expected numpy array or torch tensor, but got {type(positions)}")
 
 def matrix_to_quaternion(matrix):
   if isinstance(matrix, torch.Tensor):

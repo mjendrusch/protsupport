@@ -84,6 +84,7 @@ class PositionLookup(nn.Module):
     return points
 
   def fragment(self, inputs, indices):
+    indices = torch.tensor([0] * indices.size(0), dtype=torch.long, device=inputs.device)
     unique, count = indices.unique(return_counts=True)
 
     # compute padding accessor into fragments:
@@ -91,8 +92,9 @@ class PositionLookup(nn.Module):
     last_fragment_pad = fragment_pad - count
     fragment_offset = last_fragment_pad.roll(1)
     fragment_offset[0] = 0
+    fragment_offset = fragment_offset.cumsum(dim=0)
     fragment_offset = torch.repeat_interleave(fragment_offset, count)
-    fragment_access = torch.arange(count.sum()) + fragment_offset
+    fragment_access = torch.arange(count.sum(), device=inputs.device) + fragment_offset
 
     # pad fragments:
     result = torch.zeros(
@@ -172,6 +174,7 @@ class PositionLookup(nn.Module):
     # align fragments:
     current = fragment_result[:, -1:]
     for idx in reversed(range(fragment_result.size(1) - 1)):
+      # FIXME: BAD THINGS HAPPEN HERE!
       pos, ms = self.init_cache(current, starter=fragment_result[0, idx, :, -3:].t())
       new_pos, pos, ms = self.move(0, current, pos, ms)
       current = torch.cat((fragment_result[:, idx:idx+1], new_pos.unsqueeze(0)), dim=-1)
