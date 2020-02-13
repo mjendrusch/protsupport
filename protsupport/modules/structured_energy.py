@@ -12,6 +12,7 @@ from protsupport.modules.structures import (
   OrientationStructure, MaskedStructure, RelativeStructure
 )
 from protsupport.modules.transformer import StructuredTransformerEncoder, StructuredTransformerDecoder
+from protsupport.modules.transformer import linear_connected, attention_connected
 from protsupport.utils.geometry import orientation
 from protsupport.modules.anglespace import PositionLookup
 
@@ -37,14 +38,16 @@ class StructuredEnergy(nn.Module):
                attention_size=128, heads=128, hidden_size=128, mlp_depth=3,
                depth=3, max_distance=20, distance_kernels=16, neighbours=15,
                activation=func.relu_, batch_norm=False, conditional=False,
-               angles=False):
+               angles=False, dropout=0.1, connected=attention_connected,
+               normalization=lambda x: x):
     super().__init__()
     distance_size = distance_size + distance_kernels - 1
     self.encoder = StructuredTransformerEncoder(
       size, size, distance_size,
       attention_size=attention_size, heads=heads, hidden_size=hidden_size,
       depth=depth, mlp_depth=mlp_depth, activation=activation,
-      batch_norm=batch_norm, normalization=spectral_norm
+      batch_norm=batch_norm, normalization=spectral_norm, dropout=0.1,
+      connected=connected
     )
     self.angles = angles
     self.lookup = PositionLookup()
@@ -82,13 +85,6 @@ class StructuredEnergy(nn.Module):
       acos = angles.cos()
       afeat = torch.cat((asin, acos), dim=1)
       features = ts.scatter.batched(self.local_features, afeat, subgraph.indices)
-      # features = torch.cat(
-      #   (
-      #     afeat,
-      #     torch.ones(tertiary.size(0), 21, dtype=tertiary.dtype, device=tertiary.device)
-      #   ),
-      #   dim=1
-      # )
       tertiary, _ = self.lookup(tertiary, torch.zeros_like(subgraph.indices))
     if self.conditional:
       features = sequence

@@ -4,8 +4,6 @@ import random
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-import numpy as np
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -24,10 +22,6 @@ from protsupport.utils.geometry import orientation
 from protsupport.modules.structures import RelativeStructure
 from protsupport.modules.structured_energy import StructuredEnergy
 from protsupport.modules.anglespace import PositionLookup
-from protsupport.modules.backrub import Backrub
-from protsupport.modules.transformer import attention_connected, linear_connected, assignment_connected
-
-from torchsupport.optim.diffmod import DiffMod
 
 AA_CODE = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -38,7 +32,6 @@ class EBMNet(ProteinNetKNN):
       num_neighbours=num_neighbours,
       n_jobs=n_jobs, cache=cache
     )
-    self.backrub = Backrub(n_moves=0)
     self.ors = torch.tensor(
       orientation(self.ters[1].numpy() / 100).transpose(2, 0, 1),
       dtype=torch.float
@@ -54,8 +47,7 @@ class EBMNet(ProteinNetKNN):
     primary[torch.randint(0, primary.size(0), (n_positions,))] = torch.randint(0, 20, (n_positions,))
 
     tertiary = self.ters[:, :, window]
-    distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
-    distances = distances[:, 1] / 100
+    distances = tertiary.permute(2, 0, 1) / 100
 
     protein = SubgraphStructure(torch.zeros(distances.size(0), dtype=torch.long))
     neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
@@ -64,9 +56,10 @@ class EBMNet(ProteinNetKNN):
     primary_onehot[torch.arange(primary.size(0)), primary] = 1
     primary_onehot = primary_onehot.clamp(0, 1)
 
+
     assert neighbours.connections.max() < primary_onehot.size(0)
     inputs = (
-      PackedTensor((angles + 0.3 * torch.randn_like(angles)).permute(1, 0)),
+      PackedTensor(distances),
       PackedTensor(primary_onehot),
       protein
     )
@@ -78,20 +71,20 @@ class EBMNet(ProteinNetKNN):
 
 class EBMTraining(EnergyTraining):
   def prepare(self):
+    position_lookup = PositionLookup()
     index = random.randrange(0, len(self.data))
     (positions, ground_truth, protein) = self.data[index]
-    # scale = min(3.14, 0.001 * (1.0001 ** (self.step_id // 10)))
-    scale = min(3.14, 0.1 + 3.14 / 100000 * self.step_id)
-    angles = scale * torch.randn_like(positions.tensor)
-    angles = (positions.tensor + angles) % 6.3
+    angles = torch.randn(positions.tensor.size(0), 3)
+    positions, _ = position_lookup(angles, protein.indices)
     return (
-      PackedTensor(angles), ground_truth, protein
+      PackedTensor(positions), ground_truth, protein
     )
 
   def decompose_batch(self, data, *args):
     count = len(data)
     targets = [self.device] * count
     gt, protein = args
+    #gt = gt.chunk(targets)
     protein = protein.chunk(targets)
     result = [
       to_device((
@@ -106,18 +99,11 @@ class EBMTraining(EnergyTraining):
 
   def each_generate(self, data, gt, protein):
     with torch.no_grad():
-      lookup = PositionLookup()
-      angs = data.tensor
-      c_alpha, _ = lookup(data.tensor[protein.indices == 0], torch.zeros_like(protein.indices[protein.indices == 0]))
-      c_alpha = c_alpha[:, 1].numpy()
+      c_alpha = data.tensor[protein.indices == 0, 1].numpy()
       fig = plt.figure()
       ax = fig.add_subplot(111, projection='3d')
       ax.plot(c_alpha[:, 0], c_alpha[:, 1], c_alpha[:, 2])
       self.writer.add_figure("output", fig, self.step_id)
-      fig = plt.figure()
-      ax = fig.add_subplot(111)
-      ax.scatter(angs[:, 1], angs[:, 2])
-      self.writer.add_figure("rama", fig, self.step_id)
 
 class DDP(nn.Module):
   def __init__(self, net):
@@ -138,24 +124,23 @@ if __name__ == "__main__":
   net = SDP(
     StructuredEnergy(
       6, 128, 10, 
-      attention_size=32, heads=8,
-      mlp_depth=2, depth=6, batch_norm=True, dropout=0.1,
-      neighbours=15, angles=True, distance_kernels=64, connected=assignment_connected
+      attention_size=128, heads=8,
+      mlp_depth=2, depth=6, batch_norm=True,
+      neighbours=15
     )
   )
-  integrator = PackedLangevin(rate=1, noise=0.1, steps=10, max_norm=None, clamp=None)
+  integrator = PackedLangevin(rate=10, noise=0.001, steps=10, max_norm=None, clamp=None)
   training = EBMTraining(
     net, data,
     batch_size=4,
-    decay=1.0,
+    decay=0.0,
     max_epochs=1000,
     integrator=integrator,
     buffer_probability=0.95,
     buffer_size=10000,
-    optimizer=DiffMod,
-    optimizer_kwargs={"lr": 5e-4},
+    optimizer_kwargs={"lr": 1e-4},
     device="cuda:0",
-    network_name="structure-ebm/assignment-connected-rub",
+    network_name="structure-ebm/no-decay",
     verbose=True
-  ).load()
+  )
   final_net = training.train()

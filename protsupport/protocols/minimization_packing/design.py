@@ -5,6 +5,8 @@ import numpy as np
 import torch
 
 #from pyrosetta import *
+import torchsupport.structured as ts
+
 from pyrosetta.rosetta.protocols.simple_moves.sidechain_moves import JumpRotamerSidechainMover
 from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.core.conformation import get_residue_from_name, get_residue_from_name1
@@ -16,7 +18,7 @@ from torchsupport.modules.basic import one_hot_encode
 
 from protsupport.data.scripts.process_proteinnet import AA_ID_DICT
 from protsupport.utils.pose import pose_to_net
-from protsupport.utils.geometry import nearest_neighbours
+from protsupport.utils.geometry import nearest_neighbours, orientation
 
 class RotamerMover():
   def sample_position(self, pose):
@@ -35,6 +37,85 @@ class RotamerMover():
     residue_name = self.sample_residue(pose, position)
     mutate_residue(pose, position + 1, residue_name)
     self.sample_rotamer(pose, position)
+
+class ConditionalDesign():
+  def __init__(self, net, pose, k=15, fix=None, dropout=0.1, steps=100):
+    self.k = k
+    self.fix = fix or []
+    self.fix = torch.tensor(self.fix, dtype=torch.long)
+    self.net = net
+    self.tertiary, self.angles, _, self.mask = pose_to_net(pose)
+    rotations, indices = nearest_neighbours(self.tertiary, k=self.k)
+
+    self.tertiary = self.tertiary.permute(2, 0, 1)
+    self.distances = self.tertiary[:, 1]
+    self.angles = self.angles.permute(1, 0)
+
+    orientations = orientation(
+      self.tertiary[:, 1].permute(1, 0)
+    ).permute(2, 0, 1).view(self.tertiary.size(0), -1)
+    positions = torch.arange(0, self.tertiary.size(0)).float()[:, None]
+
+    self.orientations = torch.cat((self.distances, orientations, positions), dim=1)
+    self.structure = ts.ConstantStructure(0, 0, indices)
+    sin = torch.sin(self.angles)
+    cos = torch.cos(self.angles)
+    self.angle_features = torch.cat((sin, cos), dim=1)
+    self.sequence = pose.sequence()
+    self.best = 0.0
+    self.steps = steps
+    self.lookup = sorted(list(AA_ID_DICT.keys()), key=AA_ID_DICT.get)
+
+  def init_sequence(self, sequence):
+    encoding = one_hot_encode(sequence, self.lookup).permute(1, 0)
+    mask = ~torch.zeros(encoding.size(0), dtype=torch.bool)
+    mask[self.fix] = 0
+    encoding[mask] = 0
+    return torch.cat((encoding, mask[:, None].float()), dim=1)
+
+  def sample(self, logits):
+    return logits.argmax(dim=1)
+
+  def update_mask(self, logits):
+    return torch.rand(logits.size(0)) < 0.1
+
+  def design(self):
+    starting_sequence = self.init_sequence(self.sequence)
+    logits = self.net(
+      self.angle_features,
+      starting_sequence,
+      self.orientations,
+      self.structure
+    )
+    sample = self.sample(logits)
+
+    if self.fix.size(0) > 0:
+      sample[self.fix] = starting_sequence[self.fix, :-1].argmax(dim=1)
+    result = "".join(map(lambda x: self.lookup[x], sample))
+
+    for idx in range(self.steps):
+      result = "".join(map(lambda x: self.lookup[x], sample))
+      log_likelihood = logits[torch.arange(logits.size(0)), sample].sum()
+      if log_likelihood >= self.best:
+        self.sequence = result
+        self.best = log_likelihood
+      seq = one_hot_encode(result, self.lookup)
+      seq = seq.permute(1, 0)
+      zero = self.update_mask(logits)
+      zero[self.fix] = 0
+      seq[zero] = 0
+      mask = zero.float()[:, None]
+      seq = torch.cat((seq, mask), dim=1)
+      new_logits = self.net(
+        self.angle_features,
+        seq,
+        self.orientations,
+        self.structure)
+      logits[zero] = new_logits[zero]
+      new_sample = self.sample(logits)
+      sample[zero] = new_sample[zero]
+
+    return self.sequence, self.best
 
 class GuidedRotamerMover(RotamerMover):
   def __init__(self):

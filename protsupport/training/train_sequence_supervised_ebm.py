@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as func
 from torch.nn.utils.spectral_norm import spectral_norm
 from torchsupport.training.energy import EnergyTraining
+from torchsupport.training.energy_supervised import EnergySupervisedTraining
 from torchsupport.training.samplers import (
   PackedMCMC, PackedDiscreteLangevin, PackedDiscreteGPLangevin,
   PackedHardDiscreteLangevin, IndependentSampler
@@ -23,8 +24,6 @@ from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
 from protsupport.modules.structures import RelativeStructure
 
-from protsupport.modules.backrub import Backrub
-
 AA_CODE = "ACDEFGHIKLMNPQRSTVWY"
 
 class EBMNet(ProteinNetKNN):
@@ -34,7 +33,6 @@ class EBMNet(ProteinNetKNN):
       num_neighbours=num_neighbours,
       n_jobs=n_jobs, cache=cache
     )
-    self.backrub = Backrub(n_moves=0)
     self.ors = torch.tensor(
       orientation(self.ters[1].numpy() / 100).transpose(2, 0, 1),
       dtype=torch.float
@@ -50,13 +48,11 @@ class EBMNet(ProteinNetKNN):
     primary[torch.randint(0, primary.size(0), (n_positions,))] = torch.randint(0, 20, (n_positions,))
 
     evolutionary = self.evos[:, window]
+    tertiary = self.ters[:, :, window]
     orientation = self.ors[window, :, :].view(
       window.stop - window.start, -1
     )
-    tertiary = self.ters[:, :, window]
-    distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
-    distances = distances[:, 1] / 100
-    angles = angles.transpose(0, 1)
+    distances = self.ters[1, :, window].transpose(0, 1) / 100
     indices = torch.tensor(
       range(window.start, window.stop),
       dtype=torch.float
@@ -64,6 +60,7 @@ class EBMNet(ProteinNetKNN):
     indices = indices.view(-1, 1)
 
     orientation = torch.cat((distances, orientation, indices), dim=1)
+    angles = self.angs[:, window].transpose(0, 1)
 
     protein = SubgraphStructure(torch.zeros(indices.size(0), dtype=torch.long))
     neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
@@ -88,7 +85,7 @@ class EBMNet(ProteinNetKNN):
       protein
     )
 
-    return inputs
+    return inputs, PackedTensor(primary, split=False)
 
   def __len__(self):
     return ProteinNet.__len__(self)
@@ -125,8 +122,9 @@ class SequenceEBM(nn.Module):
               return_deltas=False):
     assert neighbours.connections.max() < primary.size(0)
     indices = neighbours.connections
-    sequence = primary
-    primary = primary[indices]
+    sequence = primary.clone()
+    primary = primary[indices].clone()
+    primary[:, 0] = 0
     angles = angles[indices]
     relative = RelativeStructure(neighbours, self.rbf)
     orientation = relative.message(
@@ -149,15 +147,23 @@ class SequenceEBM(nn.Module):
     out = self.out(cat)
     this_energy = out[torch.arange(out.size(0)), sequence.argmax(dim=1)]
     differences = this_energy.unsqueeze(-1) - out
-    out = scatter.mean(this_energy.unsqueeze(-1), protein.indices)
+    energy = scatter.mean(this_energy.unsqueeze(-1), protein.indices)
     if return_deltas:
-      return out, differences
-    return out
+      return (energy, -out), out
+    return energy, out
 
-class EBMTraining(EnergyTraining):
+class EBMTraining(EnergySupervisedTraining):
+  def classifier_loss(self, logits, labels):
+    _, logits = logits
+    return func.cross_entropy(-logits, labels)
+
+  def logit_energy(self, logits, *args):
+    logits, _ = logits
+    return logits
+
   def prepare(self):
     index = random.randrange(0, len(self.data))
-    (primary, ground_truth, angles, orientation, neighbours, protein) = self.data[index]
+    (primary, ground_truth, angles, orientation, neighbours, protein), _ = self.data[index]
     primary_indices = torch.randint(0, 20, (primary.tensor.size(0),))
     primary = torch.zeros_like(primary.tensor)
     primary[torch.arange(primary.size(0)), primary_indices] = 1
@@ -189,7 +195,7 @@ class EBMTraining(EnergyTraining):
   def each_generate(self, data, ground_truth, *args):
     datamax = data.tensor.argmax(dim=1)
     gtmax = ground_truth.tensor.argmax(dim=1)
-    
+
     identity = (datamax == gtmax).float().mean()
     self.writer.add_scalar("identity", float(identity), self.step_id)
 
@@ -206,30 +212,30 @@ class DDP(nn.Module):
     super().__init__()
     self.net = net
 
-  def forward(self, *args, **kwargs):
+  def forward(self, *args):
     inputs = []
     for arg in args:
       if isinstance(arg, PackedTensor):
         inputs.append(arg.tensor)
       else:
         inputs.append(arg)
-    return self.net(*inputs, **kwargs)
+    return self.net(*inputs)
 
 if __name__ == "__main__":
   data = EBMNet(sys.argv[1], num_neighbours=15)
-  net = DDP(SequenceEBM(51, 20, neighbours=15))
-  integrator = IndependentSampler(steps=20, scale=1, rate=1, noise=0.0)
+  net = SDP(SequenceEBM(51, 20, neighbours=15))
+  integrator = IndependentSampler(steps=20, scale=10, rate=1, noise=0.05)
   training = EBMTraining(
     net, data,
-    batch_size=128,
+    batch_size=32,
     max_epochs=1000,
     integrator=integrator,
     buffer_probability=0.95,
-    decay=0.0,
+    decay=1.0,
     buffer_size=10000,
     optimizer_kwargs={"lr": 1e-4},
     device="cuda:0",
-    network_name="sequence-ebm-large",
+    network_name="sequence-ebm/independent-sampler-26",
     verbose=True
   )
   final_net = training.train()

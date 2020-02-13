@@ -151,10 +151,12 @@ def matrix_to_quaternion(matrix):
   if isinstance(matrix, torch.Tensor):
     w = torch.sqrt(1.0 + matrix[:, 0, 0] + matrix[:, 1, 1] + matrix[:, 2, 2] + 1e-6) / 2.0
     w4 = (4.0 * w)
-    x = (matrix[:, 2, 1] - matrix[:, 1, 2]) / (w4 + 1e-6)
-    y = (matrix[:, 0, 2] - matrix[:, 2, 0]) / (w4 + 1e-6)
-    z = (matrix[:, 1, 0] - matrix[:, 0, 1]) / (w4 + 1e-6)
-    return torch.cat([w[:, None], x[:, None], y[:, None], z[:, None]], dim=1)
+    x = (matrix[:, 2, 1] - matrix[:, 1, 2] + 1e-6) / (w4 + 1e-6)
+    y = (matrix[:, 0, 2] - matrix[:, 2, 0] + 1e-6) / (w4 + 1e-6)
+    z = (matrix[:, 1, 0] - matrix[:, 0, 1] + 1e-6) / (w4 + 1e-6)
+    result = torch.cat([w[:, None], x[:, None], y[:, None], z[:, None]], dim=1)
+    result[(w4 == 0.0).view(-1)] = 0.0
+    return result
   else:
     w = np.sqrt(1.0 + matrix[0, 0] + matrix[1, 1] + matrix[2, 2] + 1e-6) / 2.0
     w4 = (4.0 * w)
@@ -183,8 +185,11 @@ def _torch_neighbourhood_relative_orientation(x, y, x_o, y_o):
   return distance, direction, rotation
 
 def _torch_batch_relative_orientation(x, y, x_o, y_o):
+  # FIXME: bullshit NaN in Jacobian
   offset = y - x
   distance = torch.norm(offset, dim=1, keepdim=True)
+  distance = distance.clone()
+  distance[distance < 1e-32] = 0 # XXX: clamp small distances to mess up jacobian.
   direction = x_o @ (offset / (distance + 1e-6)).unsqueeze(-1)
   direction[(distance == 0).view(-1)] = 0
   rotation = matrix_to_quaternion(x_o @ y_o)

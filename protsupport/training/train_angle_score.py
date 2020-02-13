@@ -4,17 +4,16 @@ import random
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-import numpy as np
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
 from torch.nn.utils.spectral_norm import spectral_norm
-from torchsupport.training.energy import EnergyTraining
-from torchsupport.training.samplers import PackedLangevin
+from torchsupport.training.energy import EnergyTraining, DenoisingScoreTraining, SlicedScoreTraining
+from torchsupport.training.samplers import AnnealedPackedLangevin
+from torchsupport.optim.diffmod import DiffMod
 
 from torchsupport.modules.basic import MLP
-from torchsupport.data.io import to_device
+from torchsupport.data.io import to_device, make_differentiable
 from torchsupport.structured import PackedTensor, ConstantStructure, SubgraphStructure
 from torchsupport.structured import DataParallel as SDP
 from torchsupport.structured import scatter
@@ -22,12 +21,10 @@ from torchsupport.structured import scatter
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
 from protsupport.modules.structures import RelativeStructure
-from protsupport.modules.structured_energy import StructuredEnergy
+from protsupport.modules.structured_score import StructuredScore
 from protsupport.modules.anglespace import PositionLookup
 from protsupport.modules.backrub import Backrub
 from protsupport.modules.transformer import attention_connected, linear_connected, assignment_connected
-
-from torchsupport.optim.diffmod import DiffMod
 
 AA_CODE = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -66,8 +63,8 @@ class EBMNet(ProteinNetKNN):
 
     assert neighbours.connections.max() < primary_onehot.size(0)
     inputs = (
-      PackedTensor((angles + 0.3 * torch.randn_like(angles)).permute(1, 0)),
-      PackedTensor(primary_onehot),
+      PackedTensor((angles + 0.1 * torch.randn_like(angles)).permute(1, 0).contiguous()),
+      PackedTensor(primary_onehot.contiguous()),
       protein
     )
 
@@ -76,40 +73,73 @@ class EBMNet(ProteinNetKNN):
   def __len__(self):
     return ProteinNet.__len__(self)
 
-class EBMTraining(EnergyTraining):
+class EBMTraining(SlicedScoreTraining):
   def prepare(self):
     index = random.randrange(0, len(self.data))
     (positions, ground_truth, protein) = self.data[index]
-    # scale = min(3.14, 0.001 * (1.0001 ** (self.step_id // 10)))
-    scale = min(3.14, 0.1 + 3.14 / 100000 * self.step_id)
-    angles = scale * torch.randn_like(positions.tensor)
-    angles = (positions.tensor + angles) % 6.3
+    angles = 3.14 * torch.randn_like(positions.tensor)
     return (
       PackedTensor(angles), ground_truth, protein
     )
 
-  def decompose_batch(self, data, *args):
-    count = len(data)
-    targets = [self.device] * count
-    gt, protein = args
-    protein = protein.chunk(targets)
-    result = [
-      to_device((
-        data[idx].detach(),
-        gt[idx].detach(),
-        protein[idx]
-      ), "cpu")
-      for idx in range(count)
-    ]
+  def sample(self):
+    self.score.eval()
+    with torch.no_grad():
+      integrator = AnnealedPackedLangevin([
+        self.sigma * self.factor ** idx for idx in range(self.n_sigma)
+      ])
+      prep = to_device(self.prepare_sample(), self.device)
+      data, *args = self.data_key(prep)
+      result = integrator.integrate(self.score, data, *args).detach()
+    self.score.train()
+    return to_device((result, data, *args), self.device)
+
+  def noise(self, data):
+    scale = torch.randint(0, self.n_sigma, (data.tensor.size(0),))
+    sigma = self.sigma * self.factor ** scale.float()
+    sigma = sigma.to(self.device)
+    sigma = sigma.view(*sigma.shape, *((data.tensor.dim() - sigma.dim()) * [1]))
+    noise = data.clone()
+    noise.tensor = data.tensor + sigma * torch.randn_like(data.tensor)
+    return noise, sigma
+
+  def energy_loss(self, score, data, noisy, sigma):
+    vectors = self.noise_vectors(score)
+    make_differentiable(vectors)
+
+    grad_v = (score * vectors).view(score.size(0), -1).sum()
+    jacobian = torch.autograd.grad(grad_v, noisy.tensor, retain_graph=True, create_graph=True)[0]
+    # jacograd = torch.autograd.grad(jacobian.mean(), noisy.tensor, retain_graph=True)
+    # print(jacobian)
+    # print(jacograd)
+
+    norm = (score ** 2).view(score.size(0), -1).sum(dim=-1) / 2
+    jacobian = (vectors * jacobian).view(score.size(0), -1).sum(dim=-1)
+
+    result = (norm + jacobian) * sigma.view(score.size(0), -1) ** 2
+
+    result = result.mean()
+
+    self.current_losses["ebm"] = float(result)
 
     return result
 
-  def each_generate(self, data, gt, protein):
+  # def energy_loss(self, score, data, noisy, sigma):
+  #   raw_loss = 0.5 * sigma ** 2 * ((score + (noisy.tensor - data.tensor) / sigma ** 2) ** 2)
+
+  #   raw_loss = raw_loss.sum(dim=1, keepdim=True)
+  #   self.current_losses["ebm"] = float(raw_loss.mean())
+  #   return raw_loss.mean()
+
+  def each_generate(self, data, noise, gt, protein):
     with torch.no_grad():
       lookup = PositionLookup()
-      angs = data.tensor
-      c_alpha, _ = lookup(data.tensor[protein.indices == 0], torch.zeros_like(protein.indices[protein.indices == 0]))
-      c_alpha = c_alpha[:, 1].numpy()
+      angs = data.tensor.cpu()
+      c_alpha, _ = lookup(angs[protein.indices.cpu() == 0], torch.zeros_like(protein.indices[protein.indices == 0].cpu()))
+      c_alpha = c_alpha[:, 1]
+      dist = (c_alpha[:, None] - c_alpha[None, :]).norm(dim=-1)
+      c_alpha = c_alpha.numpy()
+      dist = dist.numpy()
       fig = plt.figure()
       ax = fig.add_subplot(111, projection='3d')
       ax.plot(c_alpha[:, 0], c_alpha[:, 1], c_alpha[:, 2])
@@ -118,6 +148,9 @@ class EBMTraining(EnergyTraining):
       ax = fig.add_subplot(111)
       ax.scatter(angs[:, 1], angs[:, 2])
       self.writer.add_figure("rama", fig, self.step_id)
+      fig, ax = plt.subplots()
+      ax.matshow(dist)
+      self.writer.add_figure("dist", fig, self.step_id)
 
 class DDP(nn.Module):
   def __init__(self, net):
@@ -133,29 +166,29 @@ class DDP(nn.Module):
         inputs.append(arg)
     return self.net(*inputs)
 
+torch.backends.cudnn.enabled = False
+
 if __name__ == "__main__":
   data = EBMNet(sys.argv[1], num_neighbours=15)
   net = SDP(
-    StructuredEnergy(
-      6, 128, 10, 
-      attention_size=32, heads=8,
-      mlp_depth=2, depth=6, batch_norm=True, dropout=0.1,
-      neighbours=15, angles=True, distance_kernels=64, connected=assignment_connected
+    StructuredScore(
+      6, 128, 10,
+      attention_size=128, heads=8,
+      mlp_depth=2, depth=2, batch_norm=True, dropout=0.1,
+      neighbours=15, angles=True, distance_kernels=64,
+      connected=attention_connected
     )
   )
-  integrator = PackedLangevin(rate=1, noise=0.1, steps=10, max_norm=None, clamp=None)
   training = EBMTraining(
     net, data,
+    sigma=3.15,
     batch_size=4,
-    decay=1.0,
     max_epochs=1000,
-    integrator=integrator,
-    buffer_probability=0.95,
-    buffer_size=10000,
-    optimizer=DiffMod,
-    optimizer_kwargs={"lr": 5e-4},
+    #optimizer=DiffMod,
+    optimizer_kwargs={"lr": 1e-4},
     device="cuda:0",
-    network_name="structure-ebm/assignment-connected-rub",
-    verbose=True
+    network_name="structure-ebm/sliced-shallow",
+    verbose=True,
+    report_interval=100
   ).load()
   final_net = training.train()
