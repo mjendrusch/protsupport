@@ -39,9 +39,6 @@ class ConditionalStructuredTransformer(nn.Module):
     )
     relative_structure = OrientationStructure(structure, relative_data)
     encoding = self.encoder(features, relative_structure)
-    result = self.decoder(
-      # self.activation(
-        encoding)
-        # )
+    result = self.decoder(encoding)
 
     return result
