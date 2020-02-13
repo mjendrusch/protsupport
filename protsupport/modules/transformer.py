@@ -6,18 +6,27 @@ from torchsupport.modules.basic import MLP, one_hot_encode
 from torchsupport.modules.normalization import AdaptiveLayerNorm
 import torchsupport.structured as ts
 
+def attention_connected(size, distance_size, attention_size, heads, normalization):
+  return ts.NeighbourDotMultiHeadAttention(
+    size + distance_size, size, attention_size, query_size=size, heads=heads,
+    normalization=normalization
+  )
+
+def linear_connected(size, distance_size, attention_size, heads, normalization):
+  return ts.NeighbourLinear(size + distance_size, size, normalization=normalization)
+
+def assignment_connected(size, distance_size, attention_size, heads, normalization):
+  return ts.NeighbourAssignment(size + distance_size, size, size, attention_size, normalization=normalization)
+
 class StructuredTransformerEncoderBlock(nn.Module):
   def __init__(self, size, distance_size, attention_size=128, heads=128,
                hidden_size=128, mlp_depth=3, activation=func.relu_,
                batch_norm=False, dropout=0.1, pre_norm=True,
-               normalization=lambda x: x):
+               normalization=lambda x: x, connected=attention_connected):
     super(StructuredTransformerEncoderBlock, self).__init__()
     self.pre_norm = pre_norm
     self.batch_norm = batch_norm
-    self.attention = ts.NeighbourDotMultiHeadAttention(
-      size + distance_size, size, attention_size, query_size=size, heads=heads,
-      normalization=normalization
-    )
+    self.attention = connected(size, distance_size, attention_size, heads, normalization)
     self.local = MLP(
       size, size,
       hidden_size=hidden_size,
@@ -52,7 +61,7 @@ class StructuredTransformerEncoder(nn.Module):
   def __init__(self, in_size, size, distance_size, attention_size=128,
                heads=128, hidden_size=128, depth=3, mlp_depth=3, dropout=0.1,
                activation=func.relu_, batch_norm=False, pre_norm=True,
-               normalization=lambda x: x):
+               normalization=lambda x: x, connected=attention_connected):
     super(StructuredTransformerEncoder, self).__init__()
     self.preprocessor = nn.Linear(in_size, size)
     self.blocks = nn.ModuleList([
@@ -60,7 +69,8 @@ class StructuredTransformerEncoder(nn.Module):
         size, distance_size,
         attention_size=attention_size, heads=heads, hidden_size=hidden_size,
         mlp_depth=mlp_depth, activation=activation, batch_norm=batch_norm,
-        pre_norm=pre_norm, dropout=dropout, normalization=normalization
+        pre_norm=pre_norm, dropout=dropout, normalization=normalization,
+        connected=connected
       )
       for _ in range(depth)
     ])
