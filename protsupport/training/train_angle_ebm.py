@@ -4,6 +4,8 @@ import random
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -24,6 +26,7 @@ from protsupport.modules.structured_energy import StructuredEnergy
 from protsupport.modules.anglespace import PositionLookup
 from protsupport.modules.backrub import Backrub
 
+from torchsupport.optim.diffmod import DiffMod
 
 AA_CODE = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -77,9 +80,9 @@ class EBMTraining(EnergyTraining):
     index = random.randrange(0, len(self.data))
     (positions, ground_truth, protein) = self.data[index]
     # scale = min(3.14, 0.001 * (1.0001 ** (self.step_id // 10)))
-    scale = min(3.14, 0.001 + 3.14 / 1000000 * self.step_id)
+    scale = min(3.14, 0.001 + 3.14 / 100000 * self.step_id)
     angles = scale * torch.randn_like(positions.tensor)
-    angles = positions.tensor + angles
+    angles = (positions.tensor + angles) % (2 * np.pi)
     return (
       PackedTensor(angles), ground_truth, protein
     )
@@ -139,18 +142,19 @@ if __name__ == "__main__":
       neighbours=15, angles=True, distance_kernels=64
     )
   )
-  integrator = PackedLangevin(rate=1, noise=0.001, steps=10, max_norm=None, clamp=None)
+  integrator = PackedLangevin(rate=1, noise=0.001, steps=20, max_norm=None, clamp=None)
   training = EBMTraining(
     net, data,
     batch_size=32,
-    decay=1.0,
+    decay=0.0,
     max_epochs=1000,
     integrator=integrator,
     buffer_probability=0.95,
     buffer_size=10000,
-    optimizer_kwargs={"lr": 1e-4},
+    optimizer=DiffMod,
+    optimizer_kwargs={"lr": 5e-4},
     device="cuda:0",
-    network_name="structure-ebm",
+    network_name="structure-ebm/no-decay",
     verbose=True
   ).load()
   final_net = training.train()

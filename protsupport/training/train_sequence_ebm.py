@@ -217,14 +217,14 @@ if __name__ == "__main__":
   integrator = IndependentSampler(steps=20, scale=1000, rate=1, noise=0.0)
   training = EBMTraining(
     net, data,
-    batch_size=32,
+    batch_size=128,
     max_epochs=1000,
     integrator=integrator,
     buffer_probability=0.95,
     buffer_size=10000,
     optimizer_kwargs={"lr": 1e-4},
     device="cuda:0",
-    network_name="sequence-ebm/independent-sampler-7",
+    network_name="sequence-ebm-large",
     verbose=True
   )
   final_net = training.train()
