@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as func
 from torch.nn.utils.spectral_norm import spectral_norm
-from torchsupport.training.energy import EnergyTraining
+from torchsupport.training.energy_sampler import EnergySamplerTraining
 from torchsupport.training.samplers import (
   PackedMCMC, PackedDiscreteLangevin, PackedDiscreteGPLangevin,
   PackedHardDiscreteLangevin, IndependentSampler
@@ -18,12 +18,11 @@ from torchsupport.data.io import to_device
 from torchsupport.structured import PackedTensor, ConstantStructure, SubgraphStructure
 from torchsupport.structured import DataParallel as SDP
 from torchsupport.structured import scatter
+from torchsupport.modules.gradient import hard_one_hot
 
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
 from protsupport.modules.structures import RelativeStructure
-
-from protsupport.modules.backrub import Backrub
 
 AA_CODE = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -34,7 +33,6 @@ class EBMNet(ProteinNetKNN):
       num_neighbours=num_neighbours,
       n_jobs=n_jobs, cache=cache
     )
-    self.backrub = Backrub(n_moves=0)
     self.ors = torch.tensor(
       orientation(self.ters[1].numpy() / 100).transpose(2, 0, 1),
       dtype=torch.float
@@ -50,13 +48,11 @@ class EBMNet(ProteinNetKNN):
     primary[torch.randint(0, primary.size(0), (n_positions,))] = torch.randint(0, 20, (n_positions,))
 
     evolutionary = self.evos[:, window]
+    tertiary = self.ters[:, :, window]
     orientation = self.ors[window, :, :].view(
       window.stop - window.start, -1
     )
-    tertiary = self.ters[:, :, window]
-    distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
-    distances = distances[:, 1] / 100
-    angles = angles.transpose(0, 1)
+    distances = self.ters[1, :, window].transpose(0, 1) / 100
     indices = torch.tensor(
       range(window.start, window.stop),
       dtype=torch.float
@@ -64,6 +60,7 @@ class EBMNet(ProteinNetKNN):
     indices = indices.view(-1, 1)
 
     orientation = torch.cat((distances, orientation, indices), dim=1)
+    angles = self.angs[:, window].transpose(0, 1)
 
     protein = SubgraphStructure(torch.zeros(indices.size(0), dtype=torch.long))
     neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
@@ -154,7 +151,52 @@ class SequenceEBM(nn.Module):
       return out, differences
     return out
 
-class EBMTraining(EnergyTraining):
+class SequenceSampler(SequenceEBM):
+  def forward(self, primary, mode, gt_ignore, angles, orientation, neighbours, protein):
+    assert neighbours.connections.max() < primary.size(0)
+    indices = neighbours.connections
+    sequence = primary
+    primary = primary[indices]
+    angles = angles[indices]
+    relative = RelativeStructure(neighbours, self.rbf)
+    orientation = relative.message(
+      orientation, orientation
+    )
+    features = torch.cat((
+      primary, angles, orientation
+    ), dim=2).permute(0, 2, 1)
+
+    inputs = torch.cat((
+      features, features[:, :, 0:1].expand_as(features)
+    ), dim=1)
+    in_view = inputs.transpose(2, 1).reshape(
+      -1, 2 * features.size(1)
+    )
+    p = self.features(in_view)
+    w = self.weight(in_view)
+    prod = (p * w)
+    cat = prod.reshape(inputs.size(0), -1)
+    out = self.out(cat)
+    return out
+
+class Wrapper(nn.Module):
+  def __init__(self, sampler):
+    super().__init__()
+    self.sampler = sampler
+
+  def sample(self, primary, mode, gt_ignore, angles, orientation, neighbours, protein):
+    inputs = primary.clone()
+    positions = torch.randint(0, inputs.tensor.size(0), (inputs.tensor.size(0) // 20,))
+    values = torch.randint(0, 20, (inputs.tensor.size(0) // 20,))
+    inputs.tensor[positions] = 0
+    inputs.tensor[positions, values] = 1
+    logits = self.sampler(inputs, mode, gt_ignore, angles, orientation, neighbours, protein)
+    positions = torch.randint(0, logits.size(0), (logits.size(0) // 10,))
+    sample = hard_one_hot(logits)
+    primary.tensor[positions] = sample[positions]
+    return primary
+
+class EBMTraining(EnergySamplerTraining):
   def prepare(self):
     index = random.randrange(0, len(self.data))
     (primary, ground_truth, angles, orientation, neighbours, protein) = self.data[index]
@@ -165,6 +207,21 @@ class EBMTraining(EnergyTraining):
       PackedTensor(primary), ground_truth,
       angles, orientation, neighbours, protein
     )
+
+  def noise(self, primary):
+    result = primary.clone()
+    count = random.randrange(primary.tensor.size(0) // 4, primary.tensor.size(0) // 2)
+    positions = torch.randint(0, primary.tensor.size(0), (count,))
+    indices = torch.randint(0, 20, (count,))
+    result.tensor[positions] = 0
+    result.tensor[positions, indices] = 1
+    return result
+
+  def sampler_loss(self, source, target, mask):
+    target_tensor = target.tensor
+    target_choice = target_tensor.argmax(dim=1)
+    mask = torch.repeat_interleave(mask, torch.tensor(target.lengths, dtype=torch.long, device=source.device))
+    return func.cross_entropy(source[mask], target_choice[mask])
 
   def decompose_batch(self, data, *args):
     count = len(data)
@@ -189,7 +246,7 @@ class EBMTraining(EnergyTraining):
   def each_generate(self, data, ground_truth, *args):
     datamax = data.tensor.argmax(dim=1)
     gtmax = ground_truth.tensor.argmax(dim=1)
-    
+
     identity = (datamax == gtmax).float().mean()
     self.writer.add_scalar("identity", float(identity), self.step_id)
 
@@ -206,30 +263,32 @@ class DDP(nn.Module):
     super().__init__()
     self.net = net
 
-  def forward(self, *args, **kwargs):
+  def forward(self, *args):
     inputs = []
     for arg in args:
       if isinstance(arg, PackedTensor):
         inputs.append(arg.tensor)
       else:
         inputs.append(arg)
-    return self.net(*inputs, **kwargs)
+    return self.net(*inputs)
 
 if __name__ == "__main__":
   data = EBMNet(sys.argv[1], num_neighbours=15)
-  net = DDP(SequenceEBM(51, 20, neighbours=15))
-  integrator = IndependentSampler(steps=20, scale=1, rate=1, noise=0.0)
+  net = SDP(SequenceEBM(51, 20, neighbours=15))
+  sampler = SDP(SequenceSampler(51, 20, neighbours=15))
   training = EBMTraining(
-    net, data,
+    net, sampler, data,
     batch_size=32,
-    max_epochs=1000,
-    integrator=integrator,
-    buffer_probability=0.95,
+    sampler_steps=20,
+    n_sampler=100,
     decay=0.0,
+    max_epochs=1000,
+    buffer_probability=0.0,
     buffer_size=10000,
+    sampler_wrapper=Wrapper,
     optimizer_kwargs={"lr": 1e-4},
     device="cuda:0",
-    network_name="sequence-ebm/fixed-sampler-3",
+    network_name="sequence-ebm/rl-sampler-full-8",
     verbose=True
   )
   final_net = training.train()
