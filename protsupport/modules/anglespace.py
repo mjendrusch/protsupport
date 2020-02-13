@@ -80,7 +80,7 @@ class PositionLookup(nn.Module):
     z = (torsions.sin() * angle_sin).unsqueeze(1)
     x = x.expand_as(y).contiguous()
     points = torch.cat((x, y, z), dim=1)
-    points = points.permute(0, 2, 1)
+    points = points.permute(0, 2, 1).contiguous()
     return points
 
   def fragment(self, inputs, indices):
@@ -111,9 +111,9 @@ class PositionLookup(nn.Module):
     return result, fragment_access
 
   def rotation(self, pos, ms):
-    m_hat = ms[:, -1] / (ms[:, -1].norm(dim=1, keepdim=True) + 1e-16)
+    m_hat = ms[:, -1] / (ms[:, -1].norm(dim=1, keepdim=True) + 1e-6)
     n = torch.cross(ms[:, -2], m_hat)
-    n_hat = n / (n.norm(dim=1, keepdim=True) + 1e-16)
+    n_hat = n / (n.norm(dim=1, keepdim=True) + 1e-6)
     cross = torch.cross(n_hat, m_hat)
     rot = torch.cat((
       m_hat.unsqueeze(1),
@@ -121,7 +121,7 @@ class PositionLookup(nn.Module):
       n_hat.unsqueeze(1)
     ), dim=1)
     rot = rot.squeeze(-1)
-    rot = rot.permute(0, 2, 1)
+    rot = rot.permute(0, 2, 1).contiguous()
 
     return rot
 
@@ -131,7 +131,7 @@ class PositionLookup(nn.Module):
     new_position = rot @ position[:, idx] + offset
     pos_cache = pos_cache.roll(-1, 1)
     pos_cache[:, -1] = new_position[:, :, -1:]
-    ms_cache = pos_cache[:, 1:] - pos_cache[:, :-1]
+    ms_cache = pos_cache[:, 1:] - pos_cache[:, :-1] + 1e-6
     return new_position, pos_cache, ms_cache
 
   def init_cache(self, target, starter=None):
@@ -168,7 +168,7 @@ class PositionLookup(nn.Module):
       new_pos, pos, ms = self.move(idx, atomized, pos, ms)
       fragment_result[:, idx] = new_pos
     fragment_result = fragment_result.squeeze(-1).unsqueeze(0)
-    fragment_result = fragment_result.permute(0, 1, 3, 2)
+    fragment_result = fragment_result.permute(0, 1, 3, 2).contiguous()
 
     result = torch.zeros_like(fragment_result)
     # align fragments:
