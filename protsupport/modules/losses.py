@@ -13,7 +13,7 @@ class RGNLoss(nn.Module):
     target = target.view(-1, 3, 3)[:, 1]
     inputs = inputs.view(-1, 3, 3)[:, 1]
     dst = lambda x, y: (x - y).norm(dim=1)
-    indices = structure.indices
+    indices = structure.indices.to(target.device)
     indices = indices[(mask > 0).nonzero().view(-1)]
     target = target[(mask > 0).nonzero().view(-1)]
     inputs = inputs[(mask > 0).nonzero().view(-1)]
