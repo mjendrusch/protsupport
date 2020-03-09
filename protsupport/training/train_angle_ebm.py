@@ -4,6 +4,8 @@ import random
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -25,6 +27,7 @@ from protsupport.modules.anglespace import PositionLookup
 from protsupport.modules.backrub import Backrub
 from protsupport.modules.transformer import attention_connected, linear_connected, assignment_connected
 
+from torchsupport.optim.diffmod import DiffMod
 
 AA_CODE = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -149,7 +152,8 @@ if __name__ == "__main__":
     integrator=integrator,
     buffer_probability=0.95,
     buffer_size=10000,
-    optimizer_kwargs={"lr": 1e-4},
+    optimizer=DiffMod,
+    optimizer_kwargs={"lr": 5e-4},
     device="cuda:0",
     network_name="structure-ebm/assignment-connected-rub",
     verbose=True
