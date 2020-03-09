@@ -13,7 +13,7 @@ from protsupport.modules.structures import (
 )
 from protsupport.modules.transformer import linear_connected, attention_connected
 from protsupport.utils.geometry import orientation
-from protsupport.modules.anglespace import PositionLookup
+from protsupport.modules.anglespace import PositionLookup, AngleProject
 
 from torchsupport.utils.memory import memory_used
 
@@ -99,7 +99,35 @@ class LocalFeatures(nn.Module):
       out = func.elu(block(bn(out)) + out)
     return out
 
-class StructuredScore(nn.Module):
+class StructuredGenerator(nn.Module):
+  def __init__(self, in_size, hidden_size=800, angles=512, fragment_size=5):
+    super(StructuredGenerator, self).__init__()
+    self.in_size = in_size
+    self.angle_lookup = AngleProject(2 * hidden_size, 3)
+    self.preproc = nn.GRUCell(in_size, in_size)
+    self.rnn = nn.LSTM(in_size, hidden_size, 2, bidirectional=True, batch_first=True)
+    self.position_lookup = PositionLookup(fragment_size=fragment_size)
+
+  def sample(self, batch_size):
+    latents = torch.randn(batch_size, self.in_size)
+    lengths = torch.randint(32, 200, (batch_size,))
+    indices = torch.arange(0, batch_size, dtype=torch.long)
+    indices = torch.repeat_interleave(indices, lengths, dim=0)
+    structure = ts.SubgraphStructure(indices)
+    structure.lengths = list(lengths)
+    return latents, structure
+
+  def forward(self, sample):
+    latent, structure = sample
+    indices = structure.indices
+
+    out = ts.scatter.autoregressive(self.preproc, latent, indices)
+    out, _ = ts.scatter.sequential(self.rnn, out, indices)
+    angles = self.angle_lookup(out)
+    #positions, _ = self.position_lookup(angles, torch.zeros_like(indices))
+    return ts.PackedTensor(angles, lengths=list(structure.counts)), structure
+
+class StructuredDiscriminator(nn.Module):
   def __init__(self, in_size, size, distance_size, sequence_size=20,
                attention_size=128, heads=128, hidden_size=128, mlp_depth=3,
                depth=3, max_distance=20, distance_kernels=16, neighbours=15,
@@ -112,7 +140,7 @@ class StructuredScore(nn.Module):
       size, size, distance_size,
       attention_size=attention_size, heads=heads, hidden_size=hidden_size,
       depth=depth, mlp_depth=mlp_depth, activation=activation,
-      batch_norm=batch_norm, dropout=0.1, normalization=lambda x: x,
+      batch_norm=batch_norm, dropout=dropout, normalization=normalization,
       connected=connected
     )
     self.angles = angles
@@ -121,9 +149,9 @@ class StructuredScore(nn.Module):
     self.neighbours = neighbours
     self.activation = activation
     self.rbf = (0, max_distance, distance_kernels)
-    self.preprocess = LocalFeatures(6 + 10, size)
+    self.preprocess = LocalFeatures(6, size)
     self.postprocess = LocalFeatures(size, size)
-    self.result = nn.Linear(2 * size, 3)
+    self.result = nn.Linear(2 * size, 1)
 
   def orientations(self, tertiary):
     ors = orientation(tertiary[:, 1].permute(1, 0)).permute(2, 0, 1).contiguous()
@@ -138,7 +166,6 @@ class StructuredScore(nn.Module):
     for index in unique:
       current = pos[structure.indices == index]
       closeness = -(current[:, None] - current[None, :]).norm(dim=-1)
-      #closeness = closeness + 5 * torch.rand_like(closeness)
       values, neighbours = closeness.topk(k=self.neighbours, dim=1)
       all_neighbours.append(neighbours)
       all_values.append(values)
@@ -146,24 +173,15 @@ class StructuredScore(nn.Module):
     all_values = torch.cat(all_values, dim=0)
     return all_values, ts.ConstantStructure(0, 0, all_neighbours)
 
-  def forward(self, tertiary, noise, sequence, subgraph):
-    noise = noise / 3.15
-    offset = (torch.log(noise) / torch.log(torch.tensor(0.60))).long()
-    condition = torch.zeros(
-      tertiary.size(0), 10,
-      device=tertiary.device,
-      dtype=torch.float
-    )
-    condition[torch.arange(tertiary.size(0)), offset.view(-1)] = 1
-
+  def forward(self, inputs):
+    tertiary, subgraph = inputs
     angles = tertiary
     asin = angles.sin()
     acos = angles.cos()
-    afeat = torch.cat((asin, acos, condition), dim=1)
+    afeat = torch.cat((asin, acos), dim=1)
+    print(afeat.shape, asin.shape, acos.shape)
     features = ts.scatter.batched(self.preprocess, afeat, subgraph.indices)
     tertiary, _ = self.lookup(tertiary, torch.zeros_like(subgraph.indices))
-    if self.conditional:
-      features = sequence
     ors = self.orientations(tertiary)
     pos = tertiary[:, 1]
     inds = torch.arange(0, pos.size(0), dtype=torch.float, device=pos.device).view(-1, 1)
