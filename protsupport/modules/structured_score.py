@@ -121,7 +121,9 @@ class StructuredScore(nn.Module):
     self.neighbours = neighbours
     self.activation = activation
     self.rbf = (0, max_distance, distance_kernels)
-    self.preprocess = LocalFeatures(6 + 10, size)
+
+    local_size = 16 if self.angles else 19
+    self.preprocess = LocalFeatures(local_size, size)
     self.postprocess = LocalFeatures(size, size)
     self.result = nn.Linear(2 * size, 3)
 
@@ -153,14 +155,18 @@ class StructuredScore(nn.Module):
       device=tertiary.device,
       dtype=torch.float
     )
-    condition[torch.arange(tertiary.size(0)), offset.view(-1)] = 1
+    print(condition.shape, tertiary.shape, offset.shape, noise.shape)
+    condition[torch.arange(offset.size(0)), offset.view(-1)] = 1
 
     angles = tertiary
     asin = angles.sin()
     acos = angles.cos()
-    afeat = torch.cat((asin, acos, condition), dim=1)
-    features = ts.scatter.batched(self.preprocess, afeat, subgraph.indices)
     tertiary, _ = self.lookup(tertiary, torch.zeros_like(subgraph.indices))
+    if self.angles:
+      afeat = torch.cat((asin, acos, condition), dim=1)
+    else:
+      afeat = torch.cat((tertiary.reshape(tertiary.size(0), -1), condition), dim=1)
+    features = ts.scatter.batched(self.preprocess, afeat, subgraph.indices)
     if self.conditional:
       features = sequence
     ors = self.orientations(tertiary)
