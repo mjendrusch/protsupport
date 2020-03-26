@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -9,11 +11,11 @@ import torchsupport.structured as ts
 from protsupport.utils.geometry import relative_orientation
 from protsupport.modules.rbf import gaussian_rbf
 from protsupport.modules.structures import (
-  OrientationStructure, MaskedStructure, RelativeStructure
+  FlexibleOrientationStructure, MaskedStructure, FlexibleRelativeStructure
 )
 from protsupport.modules.transformer import linear_connected, attention_connected
 from protsupport.utils.geometry import orientation
-from protsupport.modules.anglespace import PositionLookup
+from protsupport.modules.anglespace import PositionLookup, AngleProject
 
 from torchsupport.utils.memory import memory_used
 
@@ -80,27 +82,8 @@ class StructuredTransformerEncoder(nn.Module):
       out = block(out, structure)
     return out
 
-class LocalFeatures(nn.Module):
-  def __init__(self, in_size, size, depth=4):
-    super().__init__()
-    self.preprocess = nn.Conv1d(in_size, size, 3, padding=1)
-    self.blocks = nn.ModuleList([
-      nn.Conv1d(size, size, 3, dilation=(idx + 1) % 4 + 1, padding=(idx + 1) % 4 + 1)
-      for idx in range(depth)
-    ])
-    self.bn = nn.ModuleList([
-      nn.InstanceNorm1d(size)
-      for idx in range(depth)
-    ])
-
-  def forward(self, inputs):
-    out = func.elu(self.preprocess(inputs))
-    for bn, block in zip(self.bn, self.blocks):
-      out = func.elu(block(bn(out)) + out)
-    return out
-
-class StructuredScore(nn.Module):
-  def __init__(self, in_size, size, distance_size, sequence_size=20,
+class ProteinTransformer(nn.Module):
+  def __init__(self, in_size, size, distance_size, mix=10,
                attention_size=128, heads=128, hidden_size=128, mlp_depth=3,
                depth=3, max_distance=20, distance_kernels=16, neighbours=15,
                activation=func.relu_, batch_norm=True, conditional=False,
@@ -115,80 +98,56 @@ class StructuredScore(nn.Module):
       batch_norm=batch_norm, dropout=0.1, normalization=lambda x: x,
       connected=connected
     )
+    self.mix = mix
     self.angles = angles
     self.lookup = PositionLookup(fragment_size=10)
     self.conditional = conditional
     self.neighbours = neighbours
     self.activation = activation
     self.rbf = (0, max_distance, distance_kernels)
-    local_size = 16 if self.angles else 19
-    self.preprocess = LocalFeatures(local_size, size)
-    self.postprocess = LocalFeatures(size, size)
-    self.result = nn.Linear(2 * size, 3)
+    self.preprocess = nn.Linear(6, size)
+    self.mean = AngleProject(size, 3 * self.mix)#nn.Linear(size, 3 * self.mix)
+    self.log_concentration = nn.Linear(size, 3 * self.mix)
+    self.weights = nn.Linear(size, self.mix)
+    self.factor = nn.Linear(size, 3)
 
   def orientations(self, tertiary):
     ors = orientation(tertiary[:, 1].permute(1, 0)).permute(2, 0, 1).contiguous()
     return ors.view(tertiary.size(0), -1)
 
-  def knn_structure(self, tertiary, structure):
-    indices = structure.indices
-    unique, count = indices.unique(return_counts=True)
-    pos = tertiary[:, 1]
-    all_neighbours = []
-    all_values = []
-    for index in unique:
-      current = pos[structure.indices == index]
-      closeness = -(current[:, None] - current[None, :]).norm(dim=-1)
-      #closeness = closeness + 5 * torch.rand_like(closeness)
-      values, neighbours = closeness.topk(k=self.neighbours, dim=1)
-      all_neighbours.append(neighbours)
-      all_values.append(values)
-    all_neighbours = torch.cat(all_neighbours, dim=0).to(tertiary.device)
-    all_values = torch.cat(all_values, dim=0)
-    return all_values, ts.ConstantStructure(0, 0, all_neighbours)
-
-  def forward(self, tertiary, noise, sequence, subgraph):
-    noise = noise / 3.15
-    offset = (torch.log(noise) / torch.log(torch.tensor(0.60))).long()
-    condition = torch.zeros(
-      tertiary.size(0), 10,
-      device=tertiary.device,
-      dtype=torch.float
-    )
-    print(condition.shape, tertiary.shape, offset.shape, noise.shape)
-    condition[torch.arange(offset.size(0)), offset.view(-1)] = 1
-
-    angles = tertiary
-    asin = angles.sin()
-    acos = angles.cos()
-    tertiary, _ = self.lookup(tertiary, torch.zeros_like(subgraph.indices))
-    if self.angles:
-      afeat = torch.cat((asin, acos, condition), dim=1)
-    else:
-      afeat = torch.cat((tertiary.reshape(tertiary.size(0), -1), condition), dim=1)
-    features = ts.scatter.batched(self.preprocess, afeat, subgraph.indices)
-    if self.conditional:
-      features = sequence
+  def forward(self, angles, tertiary, structure, subgraph):
+    # TODO: add linear dependency between angles following PixelCNN++
+    previous_angles = angles.roll(1, dims=0)
+    previous_angles[0] = 0
+    asin = previous_angles.sin()
+    acos = previous_angles.cos()
+    afeat = torch.cat((asin, acos), dim=1)
+    features = self.preprocess(afeat)
     ors = self.orientations(tertiary)
     pos = tertiary[:, 1]
     inds = torch.arange(0, pos.size(0), dtype=torch.float, device=pos.device).view(-1, 1)
     distances = torch.cat((pos, ors, inds), dim=1)
 
-    dist, structure = self.knn_structure(tertiary, subgraph)
-    neighbour_pos = (pos[:, None] - pos[structure.connections] + 1e-6)
-    dist = (neighbour_pos).contiguous()
-    dist = dist.norm(dim=2, keepdim=True)
-    dist = gaussian_rbf(dist, *self.rbf)
-
-    distance_data = RelativeStructure(structure, self.rbf)
-    relative_data = distance_data.message(
-      distances, distances
+    distance_data = FlexibleRelativeStructure(structure, self.rbf)
+    relative_data, _, _ = distance_data.message(
+      distances, distances.roll(1, dims=0)
     )
-    relative_structure = OrientationStructure(structure, relative_data)
+    print(relative_data)
+    relative_structure = FlexibleOrientationStructure(structure, relative_data)
 
     encoding = self.encoder(features, relative_structure)
-    encoding = ts.scatter.batched(self.postprocess, encoding, subgraph.indices)
-    encoding = torch.cat((features, encoding), dim=1)
-    result = self.result(encoding)
+    mean = self.mean(encoding).view(encoding.size(0), 3, self.mix)
+    factor = self.factor(encoding)
+    mean[:, 1] = mean[:, 1] + (factor[:, 0] * angles[:, 0]).unsqueeze(-1)
+    mean[:, 2] = mean[:, 2] + (factor[:, 1] * angles[:, 0] + factor[:, 2] * angles[:, 1]).unsqueeze(-1)
+    concentration = 0.1 + 1000 * self.log_concentration(encoding).sigmoid().view(encoding.size(0), 3, self.mix)
+    #print(concentration)
+    #concentration = 0.1 * torch.ones_like(concentration)
+    weights = self.weights(encoding).softmax(dim=-1)
 
-    return result
+    parameters = [
+      (mean[:, :, idx], concentration[:, :, idx])
+      for idx in range(self.mix)
+    ]
+
+    return ((weights, parameters),)

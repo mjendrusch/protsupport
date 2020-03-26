@@ -13,7 +13,7 @@ from protsupport.modules.structures import (
 )
 from protsupport.modules.transformer import linear_connected, attention_connected
 from protsupport.utils.geometry import orientation
-from protsupport.modules.anglespace import PositionLookup, AngleProject
+from protsupport.modules.anglespace import PositionLookup, AngleProject, AngleLookup, AngleSample
 
 from torchsupport.utils.memory import memory_used
 
@@ -179,7 +179,6 @@ class StructuredDiscriminator(nn.Module):
     asin = angles.sin()
     acos = angles.cos()
     afeat = torch.cat((asin, acos), dim=1)
-    print(afeat.shape, asin.shape, acos.shape)
     features = ts.scatter.batched(self.preprocess, afeat, subgraph.indices)
     tertiary, _ = self.lookup(tertiary, torch.zeros_like(subgraph.indices))
     ors = self.orientations(tertiary)
@@ -202,6 +201,6 @@ class StructuredDiscriminator(nn.Module):
     encoding = self.encoder(features, relative_structure)
     encoding = ts.scatter.batched(self.postprocess, encoding, subgraph.indices)
     encoding = torch.cat((features, encoding), dim=1)
-    result = self.result(encoding)
+    result = self.result(ts.scatter.max(encoding, subgraph.indices))
 
     return result
