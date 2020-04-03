@@ -156,6 +156,7 @@ def matrix_to_quaternion(matrix):
     z = (matrix[:, 1, 0] - matrix[:, 0, 1] + 1e-6) / (w4 + 1e-6)
     result = torch.cat([w[:, None], x[:, None], y[:, None], z[:, None]], dim=1)
     result[(w4 == 0.0).view(-1)] = 0.0
+    result[torch.isnan(result)] = 1.0
     return result
   else:
     w = np.sqrt(1.0 + matrix[0, 0] + matrix[1, 1] + matrix[2, 2] + 1e-6) / 2.0
