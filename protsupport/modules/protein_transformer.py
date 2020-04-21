@@ -145,13 +145,21 @@ class ProteinTransformer(nn.Module):
     return distribution.sample()
 
   def sample_angles(self, mean, concentration, factor, weights):
+    if not (weights >= 0).all():
+      print("BIG FUCKUP PRE!")
     weights = OneHotCategorical(probs=weights).sample()
-    factor = factor[torch.arange(factor.size(0)), :, weights.argmax(dim=1)]
+    if not (weights >= 0).all():
+      print("BIG FUCKUP POST!")
+    print("subweights", weights)
+    print(factor.shape, weights.shape)
+    factor_0 = factor[torch.arange(factor.size(0)), 0, weights.argmax(dim=-1)]
+    factor_1 = factor[torch.arange(factor.size(0)), 1, weights.argmax(dim=-1)]
+    factor_2 = factor[torch.arange(factor.size(0)), 2, weights.argmax(dim=-1)]
     angles_0 = self.mixture_of_von_mises(mean[:, 0], concentration[:, 0], weights)
-    mean[:, 1] = mean[:, 1] + (factor[:, 0] * angles_0).unsqueeze(-1)
+    mean[:, 1] = mean[:, 1] + (factor_0 * angles_0).unsqueeze(-1)
 
     angles_1 = self.mixture_of_von_mises(mean[:, 1], concentration[:, 1], weights)
-    mean[:, 2] = mean[:, 2] + (factor[:, 1] * angles_0 + factor[:, 2] * angles_1).unsqueeze(-1)
+    mean[:, 2] = mean[:, 2] + (factor_1 * angles_0 + factor_2 * angles_1).unsqueeze(-1)
 
     angles_2 = self.mixture_of_von_mises(mean[:, 2], concentration[:, 2], weights)
 
@@ -177,28 +185,30 @@ class ProteinTransformer(nn.Module):
     )
     relative_structure = FlexibleOrientationStructure(structure, relative_data)
 
+    torch.cuda.empty_cache()
     encoding = self.encoder(features, relative_structure)
     mean = self.mean(encoding).view(encoding.size(0), 3, self.mix)
+    new_mean = mean.clone()
     factor = self.factor(encoding).view(encoding.size(0), 3, self.mix)
-    mean[:, 1] = mean[:, 1] + factor[:, 0] * angles[:, 0].unsqueeze(-1)
-    mean[:, 2] = mean[:, 2] + factor[:, 1] * angles[:, 0].unsqueeze(-1) + factor[:, 2] * angles[:, 1].unsqueeze(-1)
+    new_mean[:, 1] = new_mean[:, 1] + factor[:, 0] * angles[:, 0].unsqueeze(-1)
+    new_mean[:, 2] = new_mean[:, 2] + factor[:, 1] * angles[:, 0].unsqueeze(-1) + factor[:, 2] * angles[:, 1].unsqueeze(-1)
     concentration = 0.1 + 1000 * self.log_concentration(encoding).sigmoid().view(encoding.size(0), 3, self.mix)
 
     weights = self.weights(encoding).softmax(dim=-1)
+    print("WS", weights.shape)
+    good = weights >= 0.0
+    bad = ~good
+    weights = good.float() * weights + bad.float() * torch.zeros_like(weights)
 
-    return weights, mean, concentration, factor
+    return weights, mean, new_mean, concentration, factor
 
-  def forward(self, angles, tertiary, structure, subgraph):
-    weights, mean, concentration, factor = self.single_forward(
-      angles, tertiary, structure, subgraph
-    )
-    angles = angles.clone()
-    for idx in range(self.schedule):
-      sampled_angles = self.sample_angles(mean, concentration, factor, weights)
+  def sampling_step(self, angles, mean, concentration, factor, weights, subgraph):
+    with torch.no_grad():
+      sampled_angles = self.sample_angles(mean.detach(), concentration.detach(), factor.detach(), weights.detach())
       admix = torch.rand(angles.size(0)) < 0.5
       angles[admix] = sampled_angles.roll(-1, dims=0)[admix]
       tertiary, _ = self.lookup(
-        angles,
+        angles.detach(),
         torch.zeros(
           angles.size(0),
           dtype=torch.long,
@@ -206,12 +216,23 @@ class ProteinTransformer(nn.Module):
         )
       )
       structure = self.autoregressive_structure(tertiary)
-      weights, mean, concentration, factor = self.single_forward(
-        angles, tertiary, structure, subgraph
+    torch.cuda.empty_cache()
+    return self.single_forward(
+      angles, tertiary, structure, subgraph
+    )
+
+  def forward(self, angles, tertiary, structure, subgraph):
+    weights, mean, new_mean, concentration, factor = self.single_forward(
+      angles, tertiary, structure, subgraph
+    )
+    angles = angles.clone()
+    for idx in range(self.schedule):
+      weights, mean, new_mean, concentration, factor = self.sampling_step(
+        angles, mean, concentration, factor, weights, subgraph
       )
 
     parameters = [
-      (mean[:, :, idx], concentration[:, :, idx])
+      (new_mean[:, :, idx], concentration[:, :, idx])
       for idx in range(self.mix)
     ]
 

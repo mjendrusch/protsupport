@@ -40,11 +40,12 @@ class SingleBackrub():
     changed[0:2] = changed[0:2] @ phi_mat
     changed[2:4] = (changed[2:4] - changed[2, 1]) @ psi_mat + changed[2, 1]
     changed = changed + offset
+    changed = torch.tensor(changed)
 
     if torch.isnan(changed).any():
       return inputs
 
-    inputs[fst:fst + 4] = torch.tensor(changed)
+    inputs[fst:fst + 4] = changed
 
     return inputs
 
