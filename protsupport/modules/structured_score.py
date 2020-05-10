@@ -13,27 +13,43 @@ from protsupport.modules.structures import (
 )
 from protsupport.modules.transformer import linear_connected, attention_connected
 from protsupport.utils.geometry import orientation
-from protsupport.modules.anglespace import PositionLookup
+from protsupport.modules.anglespace import PositionLookup, AngleProject
 
 from torchsupport.utils.memory import memory_used
+
+
+class ScaleFeatures(nn.Module):
+  def __init__(self, size, depth=6):
+    super().__init__()
+    self.blocks = nn.ModuleList([
+      nn.Sequential(nn.Conv1d(size, size, 3, padding=1), nn.ReLU())
+      for idx in range(depth)
+    ])
+
+  def forward(self, inputs):
+    out = inputs
+    for idx, block in enumerate(self.blocks):
+      out = out + func.interpolate(block(func.avg_pool1d(out, 2 ** (idx + 1))), size=out.size(-1), mode="linear")
+    return out
 
 class StructuredTransformerEncoderBlock(nn.Module):
   def __init__(self, size, distance_size, attention_size=128, heads=128,
                hidden_size=128, mlp_depth=3, activation=func.relu_,
                batch_norm=False, dropout=0.1, pre_norm=True,
-               normalization=lambda x: x, connected=attention_connected):
+               normalization=spectral_norm, connected=attention_connected):
     super(StructuredTransformerEncoderBlock, self).__init__()
     self.pre_norm = pre_norm
     self.batch_norm = batch_norm
     self.attention = connected(size, distance_size, attention_size, heads, normalization)
-    self.local = MLP(
-      size, size,
-      hidden_size=hidden_size,
-      depth=mlp_depth,
-      activation=activation,
-      batch_norm=False,
-      normalization=normalization
-    )
+    self.local = ScaleFeatures(size, depth=6)
+    # MLP(
+    #   size, size,
+    #   hidden_size=hidden_size,
+    #   depth=mlp_depth,
+    #   activation=activation,
+    #   batch_norm=False,
+    #   normalization=normalization
+    # )
     self.activation = activation
     self.dropout = lambda x: x
     if dropout is not None:
@@ -48,7 +64,9 @@ class StructuredTransformerEncoderBlock(nn.Module):
     if self.pre_norm:
       normed = self.bn(features)
       out = features + self.dropout(self.attention(normed, normed, structure))
-      out = out + self.dropout(self.local(self.local_bn(out)))
+      subgraph = torch.arange(len(structure.lengths), dtype=torch.long, device=out.device)
+      subgraph = torch.repeat_interleave(subgraph, torch.tensor(structure.lengths).to(out.device))
+      out = out + self.dropout(ts.scatter.batched(self.local, self.local_bn(out), subgraph))
     else:
       out = features + self.dropout(self.attention(features, features, structure))
       out = self.bn(out)
@@ -60,7 +78,7 @@ class StructuredTransformerEncoder(nn.Module):
   def __init__(self, in_size, size, distance_size, attention_size=128,
                heads=128, hidden_size=128, depth=3, mlp_depth=3, dropout=0.1,
                activation=func.relu_, batch_norm=False, pre_norm=True,
-               normalization=lambda x: x, connected=attention_connected):
+               normalization=spectral_norm, connected=attention_connected):
     super(StructuredTransformerEncoder, self).__init__()
     self.preprocessor = nn.Linear(in_size, size)
     self.blocks = nn.ModuleList([
@@ -85,7 +103,7 @@ class LocalFeatures(nn.Module):
     super().__init__()
     self.preprocess = nn.Conv1d(in_size, size, 3, padding=1)
     self.blocks = nn.ModuleList([
-      nn.Conv1d(size, size, 3, dilation=(idx + 1) % 4 + 1, padding=(idx + 1) % 4 + 1)
+      nn.Conv1d(size, size, 3, dilation=(2 * idx + 1) % 4 + 1, padding=(2 * idx + 1) % 4 + 1)
       for idx in range(depth)
     ])
     self.bn = nn.ModuleList([
@@ -105,14 +123,14 @@ class StructuredScore(nn.Module):
                depth=3, max_distance=20, distance_kernels=16, neighbours=15,
                activation=func.relu_, batch_norm=True, conditional=False,
                angles=False, dropout=0.1, connected=attention_connected,
-               normalization=lambda x: x):
+               normalization=spectral_norm):
     super().__init__()
     distance_size = distance_size + distance_kernels - 1
     self.encoder = StructuredTransformerEncoder(
       size, size, distance_size,
       attention_size=attention_size, heads=heads, hidden_size=hidden_size,
       depth=depth, mlp_depth=mlp_depth, activation=activation,
-      batch_norm=batch_norm, dropout=0.1, normalization=lambda x: x,
+      batch_norm=batch_norm, dropout=0.1, normalization=normalization,
       connected=connected
     )
     self.angles = angles
@@ -124,7 +142,7 @@ class StructuredScore(nn.Module):
     local_size = 16 if self.angles else 19
     self.preprocess = LocalFeatures(local_size, size)
     self.postprocess = LocalFeatures(size, size)
-    self.result = nn.Linear(2 * size, 3)
+    self.result = AngleProject(2 * size, 3)
 
   def orientations(self, tertiary):
     ors = orientation(tertiary[:, 1].permute(1, 0)).permute(2, 0, 1).contiguous()
@@ -139,9 +157,10 @@ class StructuredScore(nn.Module):
     for index in unique:
       current = pos[structure.indices == index]
       closeness = -(current[:, None] - current[None, :]).norm(dim=-1)
+      values, unneighbours = (-closeness).topk(k=5, dim=1)
       #closeness = closeness + 5 * torch.rand_like(closeness)
-      values, neighbours = closeness.topk(k=self.neighbours, dim=1)
-      all_neighbours.append(neighbours)
+      values, neighbours = closeness.topk(k=self.neighbours - 5, dim=1)
+      all_neighbours.append(torch.cat((neighbours, unneighbours), dim=1))
       all_values.append(values)
     all_neighbours = torch.cat(all_neighbours, dim=0).to(tertiary.device)
     all_values = torch.cat(all_values, dim=0)
