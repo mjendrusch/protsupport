@@ -166,6 +166,16 @@ def matrix_to_quaternion(matrix):
     z = (matrix[1, 0] - matrix[0, 1]) / w4
     return np.array([w, x, y, z])
 
+def rotate_quaternion(q, v):
+  shape = list(v.shape)
+  q = q.view(-1, 4)
+  v = v.view(-1, 3)
+
+  qvec = q[:, 1:]
+  uv = torch.cross(qvec, v, dim=1)
+  uuv = torch.cross(qvec, uv, dim=1)
+  return (v + 2 * (q[:, :1] * uv + uuv)).view(shape)
+
 def _np_relative_orientation(x, y, x_o, y_o):
   offset = y - x
   distance = np.linalg.norm(offset, axis=0)
@@ -179,7 +189,7 @@ def _torch_neighbourhood_relative_orientation(x, y, x_o, y_o):
   distance = torch.norm(offset, dim=1, keepdim=True)
   direction = (offset / (distance + 1e-6)) @ x_o
   direction[(distance == 0).view(-1)] = 0
-  rotation = matrix_to_quaternion(x_o @ y_o)
+  rotation = matrix_to_quaternion(x_o.t() @ y_o)
   if torch.isnan(distance).any(): print("bad distance")
   if torch.isnan(direction).any(): print("bad direction")
   if torch.isnan(rotation).any(): print("bad rotation")
@@ -191,9 +201,9 @@ def _torch_batch_relative_orientation(x, y, x_o, y_o):
   distance = torch.norm(offset, dim=1, keepdim=True)
   distance = distance.clone()
   distance[distance < 1e-32] = 0 # XXX: clamp small distances to mess up jacobian.
-  direction = x_o @ (offset / (distance + 1e-6)).unsqueeze(-1)
+  direction = x_o.permute(0, 2, 1) @ (offset / (distance + 1e-6)).unsqueeze(-1)
   direction[(distance == 0).view(-1)] = 0
-  rotation = matrix_to_quaternion(x_o @ y_o)
+  rotation = matrix_to_quaternion(x_o.permute(0, 2, 1) @ y_o)
   if torch.isnan(distance).any(): print("bad distance")
   if torch.isnan(direction).any(): print("bad direction")
   if torch.isnan(rotation).any(): print("bad rotation")
