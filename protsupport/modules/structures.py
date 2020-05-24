@@ -33,6 +33,18 @@ class RelativeStructure(ts.PairwiseData):
       direction, rotation, distance_sin, distance_cos
     ), dim=1)
 
+class DistanceRelativeStructure(RelativeStructure):
+  def compare(self, source, target):
+    x, y = source[:, :3], target[:, :3]
+    x_i, y_i = target[:, -1], source[:, -1]
+    distance = (x - y).norm(dim=1, keepdim=True)
+    distance_sin = torch.sin((x_i - y_i) / 10)[:, None]
+    distance_cos = torch.cos((x_i - y_i) / 10)[:, None]
+    return torch.cat((
+      gaussian_rbf(distance, *self.rbf),
+      distance_sin, distance_cos
+    ), dim=1)
+
 class MaskedStructure(OrientationStructure):
   def __init__(self, structure, distances,
                sequence, encoder_features):
