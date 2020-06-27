@@ -15,6 +15,14 @@ class OrientationStructure(ts.ConstantStructure):
   def message(self, source, target):
     return torch.cat((source[self.connections], self.distances), dim=2)
 
+class SequenceOrientationStructure(OrientationStructure):
+  def __init__(self, structure, distances, sequence):
+    super().__init__(structure, distances)
+    self.sequence = sequence
+
+  def message(self, source, target):
+    return torch.cat((source[self.connections], self.sequence[self.connections], self.distances), dim=2)
+
 class RelativeStructure(ts.PairwiseData):
   def __init__(self, structure, rbf_params):
     ts.PairwiseData.__init__(self, structure)
@@ -53,7 +61,7 @@ class MaskedStructure(OrientationStructure):
     self.index = torch.tensor(list(range(self.connections.size(0))), dtype=torch.long)
     self.index = self.index.view(-1, 1).to(self.encoder_data.device)
     self.pre = (self.connections < self.index).unsqueeze(-1)
-    self.post = 1 - self.pre
+    self.post = ~self.pre
     self.encoder_data[self.pre.expand_as(self.encoder_data)] = 0
     self.sequence = sequence[self.connections]
     self.sequence[self.post.expand_as(self.sequence)] = 0
@@ -106,7 +114,7 @@ class FlexibleMaskedStructure(FlexibleOrientationStructure):
     self.index = torch.tensor(list(range(self.connections.size(0))), dtype=torch.long)
     self.index = self.index.view(-1).to(self.encoder_data.device)
     self.pre = (self.connections < self.index).unsqueeze(-1)
-    self.post = 1 - self.pre
+    self.post = ~self.pre
     self.encoder_data[self.pre.expand_as(self.encoder_data)] = 0
     self.sequence = sequence[self.connections]
     self.sequence[self.post.expand_as(self.sequence)] = 0
