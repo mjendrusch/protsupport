@@ -75,9 +75,9 @@ class DistancePredictor(nn.Module):
     super().__init__()
     self.sequential = Sequential(in_size, size, depth=seq_depth)
     self.pairwise = Pairwise(2 * (in_size + size), size, depth=pair_depth)
-    seq_out_sizes = seq_out_sizes or (36, 36, 21)
+    seq_out_sizes = seq_out_sizes or (36, 36, 20)
     pair_out_sizes = pair_out_sizes or (42, 36, 36, 36)
-    pair_proj_sizes = pair_proj_sizes or (36, 36, 21)
+    pair_proj_sizes = pair_proj_sizes or (36, 36, 20)
     self.seq_predictions = nn.ModuleList([
       nn.Conv1d(size, out_size, 1)
       for out_size in seq_out_sizes
@@ -98,7 +98,6 @@ class DistancePredictor(nn.Module):
     return result
 
   def forward(self, inputs):
-    print(inputs.shape)
     sequential = self.sequential(inputs)
     sequential_predictions = [
       pred(sequential)
@@ -111,10 +110,10 @@ class DistancePredictor(nn.Module):
       pred(pairwise)
       for pred in self.pair_predictions
     ]
-    pairwise_predictions[0] = (
-      pairwise_predictions[0] +
-      pairwise_predictions[0].transpose(2, 3)
-    ) / 2
+    #pairwise_predictions[0] = (
+    #  pairwise_predictions[0] +
+    #  pairwise_predictions[0].transpose(2, 3)
+    #) / 2
     projected_x = pairwise.mean(dim=-1)
     projected_y = pairwise.mean(dim=-2)
     x_predictions = [
