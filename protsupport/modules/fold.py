@@ -5,26 +5,46 @@ import torch.nn.functional as func
 from torchsupport.modules.rezero import ReZero
 
 class ResBlock(nn.Module):
-  def __init__(self, size, N=1, kernel_size=15, dilation=1):
+  def __init__(self, size, N=1, drop=None, kernel_size=15, dilation=1):
     super().__init__()
     self.conv = getattr(nn, f"Conv{N}d")
-    self.block = nn.Sequential(
-      self.conv(
-        size, size // 2, kernel_size,
-        dilation=dilation,
-        padding=(kernel_size // 2) * dilation
-      ),
-      nn.ReLU(),
-      self.conv(
-        size // 2, size // 2, 1
-      ),
-      nn.ReLU(),
-      self.conv(
-        size // 2, size, kernel_size,
-        dilation=dilation,
-        padding=(kernel_size // 2) * dilation
+    if drop:
+      self.block = nn.Sequential(
+        self.conv(
+          size, size // 2, kernel_size,
+          dilation=dilation,
+          padding=(kernel_size // 2) * dilation
+        ),
+        nn.ReLU(),
+        self.conv(
+          size // 2, size // 2, 1
+        ),
+        nn.ReLU(),
+        nn.Dropout(drop),
+        self.conv(
+          size // 2, size, kernel_size,
+          dilation=dilation,
+          padding=(kernel_size // 2) * dilation
+        )
       )
-    )
+    else:
+      self.block = nn.Sequential(
+        self.conv(
+          size, size // 2, kernel_size,
+          dilation=dilation,
+          padding=(kernel_size // 2) * dilation
+        ),
+        nn.ReLU(),
+        self.conv(
+          size // 2, size // 2, 1
+        ),
+        nn.ReLU(),
+        self.conv(
+          size // 2, size, kernel_size,
+          dilation=dilation,
+          padding=(kernel_size // 2) * dilation
+        )
+      )
     self.zero = ReZero(size)
 
   def forward(self, inputs):
@@ -33,14 +53,15 @@ class ResBlock(nn.Module):
     return out
 
 class Sequential(nn.Module):
-  def __init__(self, in_size, out_size, depth=10):
+  def __init__(self, in_size, out_size, depth=10, drop=None):
     super().__init__()
     self.preprocess = nn.Conv1d(in_size, out_size, 1)
     self.blocks = nn.Sequential(*[
       ResBlock(
         out_size, N=1,
         kernel_size=15,
-        dilation=2 ** (idx % 5)
+        dilation=2 ** (idx % 5),
+        drop=drop
       )
       for idx in range(depth)
     ])
@@ -50,14 +71,15 @@ class Sequential(nn.Module):
     return self.blocks(out)
 
 class Pairwise(nn.Module):
-  def __init__(self, in_size, out_size, depth=100):
+  def __init__(self, in_size, out_size, depth=100, drop=None):
     super().__init__()
     self.preprocess = nn.Conv2d(in_size, out_size, 1)
     self.blocks = nn.Sequential(*[
       ResBlock(
         out_size, N=2,
         kernel_size=5,
-        dilation=2 ** (idx % 5)
+        dilation=2 ** (idx % 5),
+        drop=drop
       )
       for idx in range(depth)
     ])
@@ -70,11 +92,12 @@ class DistancePredictor(nn.Module):
   def __init__(self, in_size=20, seq_out_sizes=None,
                pair_out_sizes=None,
                pair_proj_sizes=None,
+               drop=None,
                seq_depth=10,
                pair_depth=100, size=64):
     super().__init__()
-    self.sequential = Sequential(in_size, size, depth=seq_depth)
-    self.pairwise = Pairwise(2 * (in_size + size), size, depth=pair_depth)
+    self.sequential = Sequential(in_size, size, depth=seq_depth, drop=drop)
+    self.pairwise = Pairwise(2 * (in_size + size), size, depth=pair_depth, drop=drop)
     seq_out_sizes = seq_out_sizes or (36, 36, 20)
     pair_out_sizes = pair_out_sizes or (42, 36, 36, 36)
     pair_proj_sizes = pair_proj_sizes or (36, 36, 20)
