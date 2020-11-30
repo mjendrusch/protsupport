@@ -74,7 +74,8 @@ class FoldNet(ProteinNetKNN):
 
     # Get sequence info
     primary = self.pris[window] - 1
-    pssm = self.evos[:, window]
+    pssm = self.evos[:20, window]
+    #pssm = pssm.softmax(dim=0)
 
     primary_onehot = torch.zeros((20, self.N), dtype=torch.float)
     primary_onehot[primary, torch.arange(seq_len)] = 1
