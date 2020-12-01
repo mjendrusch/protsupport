@@ -1,6 +1,9 @@
+import random
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
+from torch.utils.checkpoint import checkpoint
 
 from torchsupport.modules.rezero import ReZero
 from torchsupport.modules.unet import UNetBackbone
@@ -215,17 +218,7 @@ class MaterializedAttentionDistancePredictor(nn.Module):
     result = torch.cat((x, y, pos), dim=1)
     return result
 
-  def forward(self, inputs, mask):
-    sequential = self.sequential(inputs)
-    out = torch.cat((sequential, inputs), dim=1)
-    out = self.tile(out)
-
-    nodes = sequential
-    edges = self.edge_project(out)
-
-    for block in self.blocks:
-      nodes, edges = block(nodes, edges, mask)
-
+  def predict(self, nodes, edges):
     node_predictions = [
       pred(nodes)
       for pred in self.seq_predictions
@@ -245,8 +238,123 @@ class MaterializedAttentionDistancePredictor(nn.Module):
       for pred in self.pair_projections
     ]
     return (
-      (*node_predictions,
-       *edge_predictions,
-       *x_predictions,
-       *y_predictions),
+      *node_predictions,
+      *edge_predictions,
+      *x_predictions,
+      *y_predictions
     )
+
+  def forward(self, inputs, mask):
+    sequential = self.sequential(inputs)
+    out = torch.cat((sequential, inputs), dim=1)
+    out = self.tile(out)
+
+    nodes = sequential
+    edges = self.edge_project(out)
+
+    for block in self.blocks:
+      nodes, edges = block(nodes, edges, mask)
+
+    predictions = self.predict(nodes, edges)
+
+    return (predictions,)
+
+class CheckpointAttentionDistancePredictor(MaterializedAttentionDistancePredictor):
+  def __init__(self, in_size=20, seq_out_sizes=None,
+               pair_out_sizes=None,
+               pair_proj_sizes=None,
+               kernel_size=3, heads=8,
+               drop=None, seq_depth=2,
+               attention_size=64,
+               pair_depth=3, size=64,
+               split=4):
+    super().__init__(
+      in_size=in_size, seq_out_sizes=seq_out_sizes,
+      pair_out_sizes=pair_out_sizes,
+      pair_proj_sizes=pair_proj_sizes,
+      kernel_size=kernel_size, heads=heads,
+      drop=drop, seq_depth=seq_depth,
+      attention_size=attention_size,
+      pair_depth=pair_depth, size=size
+    )
+    self.split = split
+
+  def iterate(self, split=0):
+    def helper(nodes, edges, mask):
+      size = (len(self.blocks) + 1) // self.split
+      for block in self.blocks[split * size:split * size + size]:
+        nodes, edges = block(nodes, edges, mask)
+      return nodes, edges
+    return helper
+
+  def forward(self, inputs, mask):
+    inputs.requires_grad_(True)
+    sequential = self.sequential(inputs)
+    out = torch.cat((sequential, inputs), dim=1)
+    out = self.tile(out)
+
+    nodes = sequential
+    edges = self.edge_project(out)
+
+    for idx in range(self.split):
+      nodes.requires_grad_(True)
+      edges.requires_grad_(True)
+      nodes, edges = checkpoint(
+        self.iterate(split=idx), nodes, edges, mask
+      )
+
+    predictions = self.predict(nodes, edges)
+
+    return (predictions,)
+
+class IterativeAttentionDistancePredictor(MaterializedAttentionDistancePredictor):
+  def __init__(self, in_size=20, seq_out_sizes=None,
+               pair_out_sizes=None,
+               pair_proj_sizes=None,
+               kernel_size=3, heads=8,
+               drop=None, seq_depth=2,
+               attention_size=64,
+               pair_depth=3, size=64,
+               iterations=10):
+    super().__init__(
+      in_size=in_size, seq_out_sizes=seq_out_sizes,
+      pair_out_sizes=pair_out_sizes,
+      pair_proj_sizes=pair_proj_sizes,
+      kernel_size=kernel_size, heads=heads,
+      drop=drop, seq_depth=seq_depth,
+      attention_size=attention_size,
+      pair_depth=pair_depth, size=size
+    )
+    self.iterations = iterations
+
+  def iterate(self, nodes, edges, mask):
+    for block in self.blocks:
+      nodes, edges = block(nodes, edges, mask)
+    return nodes, edges
+
+  def forward(self, inputs, mask):
+    inputs.requires_grad_(True)
+    sequential = self.sequential(inputs)
+    out = torch.cat((sequential, inputs), dim=1)
+    out = self.tile(out)
+
+    nodes = sequential
+    edges = self.edge_project(out)
+
+    rand_step = random.randrange(self.iterations)
+
+    pre_nodes = pre_edges = None
+    for idx in range(self.iterations):
+      nodes.requires_grad_(True)
+      edges.requires_grad_(True)
+      nodes, edges = checkpoint(
+        self.iterate, nodes, edges, mask
+      )
+      if idx == rand_step:
+        pre_nodes = nodes
+        pre_edges = edges
+
+    pre_predictions = self.predict(pre_nodes, pre_edges)
+    predictions = self.predict(nodes, edges)
+
+    return (predictions, pre_predictions)
