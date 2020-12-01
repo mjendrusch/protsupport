@@ -8,12 +8,14 @@ from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 
 class FoldNet(ProteinNetKNN):
   def __init__(self, path, num_neighbours=20, n_jobs=1, n_backrub=10, N=200,
-               phi=0.2 * np.pi, psi=0.2 * np.pi, tau=0.2 * np.pi, cache=True):
+               phi=0.2 * np.pi, psi=0.2 * np.pi, tau=0.2 * np.pi, cache=True,
+               pass_mask=False):
     super(FoldNet, self).__init__(
       path,
       num_neighbours=num_neighbours,
       n_jobs=n_jobs, cache=cache
     )
+    self.pass_mask = pass_mask
     self.N = N
     self.backrub = Backrub(n_moves=n_backrub, phi=phi, psi=psi, tau=tau)
     self.ors = torch.tensor(
@@ -110,6 +112,11 @@ class FoldNet(ProteinNetKNN):
     inputs = (
       primary_onehot
     )
+
+    if self.pass_mask:
+      inputs = (
+        inputs, mask
+      )
 
     targets = (
       # sequential
