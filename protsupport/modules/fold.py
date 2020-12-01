@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as func
 
 from torchsupport.modules.rezero import ReZero
+from torchsupport.modules.unet import UNetBackbone
+from torchsupport.structured.modules.materialized_transformer import MaterializedTransformerBlock
 
 class ResBlock(nn.Module):
   def __init__(self, size, N=1, drop=None, kernel_size=15, dilation=1):
@@ -150,6 +152,101 @@ class DistancePredictor(nn.Module):
     return (
       (*sequential_predictions,
        *pairwise_predictions,
+       *x_predictions,
+       *y_predictions),
+    )
+
+class UNetDistancePredictor(nn.Module):
+  def __init__(self):
+    pass # TODO
+
+class MaterializedAttentionDistancePredictor(nn.Module):
+  def __init__(self, in_size=20, seq_out_sizes=None,
+               pair_out_sizes=None,
+               pair_proj_sizes=None,
+               kernel_size=1, heads=8,
+               drop=None, seq_depth=10,
+               attention_size=64,
+               pair_depth=100, size=64):
+    super().__init__()
+    self.sequential = Sequential(in_size, size, depth=seq_depth, drop=drop)
+    self.blocks = nn.ModuleList([
+      MaterializedTransformerBlock(
+        size, size, size, size,
+        attention_size=attention_size, heads=heads,
+        value_size=size, kernel_size=kernel_size,
+        activation=nn.SiLU(), dropout=drop or 0.1
+      )
+      for idx in range(pair_depth)
+    ])
+    self.edge_project = nn.Conv2d(2 * (in_size + size) + 100, size, 1, bias=False)
+    seq_out_sizes = seq_out_sizes or (36, 36, 20)
+    pair_out_sizes = pair_out_sizes or (42, 36, 36, 36)
+    pair_proj_sizes = pair_proj_sizes or (36, 36, 20)
+    self.seq_predictions = nn.ModuleList([
+      nn.Conv1d(size, out_size, 1)
+      for out_size in seq_out_sizes
+    ])
+    self.pair_predictions = nn.ModuleList([
+      nn.Conv2d(size, out_size, 1)
+      for out_size in pair_out_sizes
+    ])
+    self.pair_projections = nn.ModuleList([
+      nn.Conv1d(size, out_size, 1)
+      for out_size in pair_proj_sizes
+    ])
+
+  def position_embedding(self, size):
+    pos = torch.arange(size, dtype=torch.float)
+    pos = abs(pos[None, :] - pos[:, None])
+    ind = torch.arange(50, dtype=torch.float)[:, None, None]
+    features = pos[None].repeat_interleave(50, dim=0)
+    features = features / (10000 ** (2 * ind / 100))
+    sin = features.sin()
+    cos = features.cos()
+    features = torch.cat((sin, cos), dim=0)
+    return features[None]
+
+  def tile(self, data):
+    pos = self.position_embedding(data.size(-1)).to(data.device)
+    pos = pos.expand(data.size(0), *pos.shape[1:])
+    x = data[:, :, None, :].repeat_interleave(data.size(-1), dim=2)
+    y = data[:, :, :, None].repeat_interleave(data.size(-1), dim=3)
+    result = torch.cat((x, y, pos), dim=1)
+    return result
+
+  def forward(self, inputs, mask):
+    sequential = self.sequential(inputs)
+    out = torch.cat((sequential, inputs), dim=1)
+    out = self.tile(out)
+
+    nodes = sequential
+    edges = self.edge_project(out)
+
+    for block in self.blocks:
+      nodes, edges = block(nodes, edges, mask)
+
+    node_predictions = [
+      pred(nodes)
+      for pred in self.seq_predictions
+    ]
+    edge_predictions = [
+      pred(edges)
+      for pred in self.pair_predictions
+    ]
+    projected_x = edges.mean(dim=-1)
+    projected_y = edges.mean(dim=-2)
+    x_predictions = [
+      pred(projected_x)
+      for pred in self.pair_projections
+    ]
+    y_predictions = [
+      pred(projected_y)
+      for pred in self.pair_projections
+    ]
+    return (
+      (*node_predictions,
+       *edge_predictions,
        *x_predictions,
        *y_predictions),
     )
