@@ -170,6 +170,7 @@ class MaterializedAttentionDistancePredictor(nn.Module):
                kernel_size=1, heads=8,
                drop=None, seq_depth=10,
                attention_size=64,
+               value_size=None,
                pair_depth=100, size=64):
     super().__init__()
     self.sequential = Sequential(in_size, size, depth=seq_depth, drop=drop)
@@ -177,7 +178,7 @@ class MaterializedAttentionDistancePredictor(nn.Module):
       MaterializedTransformerBlock(
         size, size, size, size,
         attention_size=attention_size, heads=heads,
-        value_size=size, kernel_size=kernel_size,
+        value_size=(value_size or size), kernel_size=kernel_size,
         activation=nn.SiLU(), dropout=drop or 0.1
       )
       for idx in range(pair_depth)
@@ -266,6 +267,7 @@ class CheckpointAttentionDistancePredictor(MaterializedAttentionDistancePredicto
                kernel_size=3, heads=8,
                drop=None, seq_depth=2,
                attention_size=64,
+               value_size=None,
                pair_depth=3, size=64,
                split=4):
     super().__init__(
@@ -275,6 +277,7 @@ class CheckpointAttentionDistancePredictor(MaterializedAttentionDistancePredicto
       kernel_size=kernel_size, heads=heads,
       drop=drop, seq_depth=seq_depth,
       attention_size=attention_size,
+      value_size=(value_size or size),
       pair_depth=pair_depth, size=size
     )
     self.split = split
@@ -344,12 +347,15 @@ class IterativeAttentionDistancePredictor(MaterializedAttentionDistancePredictor
     rand_step = random.randrange(self.iterations)
 
     pre_nodes = pre_edges = None
+    p = 1.0
     for idx in range(self.iterations):
       nodes.requires_grad_(True)
       edges.requires_grad_(True)
       nodes, edges = checkpoint(
         self.iterate, nodes, edges, mask
       )
+      nodes = p * nodes + (1 - p) * nodes.detach()
+      edges = p * edges + (1 - p) * edges.detach()
       if idx == rand_step:
         pre_nodes = nodes
         pre_edges = edges
@@ -357,4 +363,4 @@ class IterativeAttentionDistancePredictor(MaterializedAttentionDistancePredictor
     pre_predictions = self.predict(pre_nodes, pre_edges)
     predictions = self.predict(nodes, edges)
 
-    return (predictions, pre_predictions)
+    return (predictions, predictions)
