@@ -74,10 +74,14 @@ class FoldNet(ProteinNetKNN):
     mask = torch.zeros(self.N, dtype=torch.bool)
     mask[:seq_len] = True
 
+    # get sequence positions
+    keeps = keeps[window]
+    keeps = keeps[None, :]
+    keeps = self.pad(keeps)
+
     # Get sequence info
     primary = self.pris[window] - 1
     pssm = self.evos[:20, window]
-    #pssm = pssm.softmax(dim=0)
 
     primary_onehot = torch.zeros((20, self.N), dtype=torch.float)
     primary_onehot[primary, torch.arange(seq_len)] = 1

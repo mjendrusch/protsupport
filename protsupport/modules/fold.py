@@ -412,12 +412,15 @@ class IterativeAttentionDistancePredictor(MaterializedAttentionDistancePredictor
     rand_step = random.randrange(self.iterations)
 
     pre_nodes = pre_edges = None
+    p = 1.0
     for idx in range(self.iterations):
       nodes.requires_grad_(True)
       edges.requires_grad_(True)
       nodes, edges = checkpoint(
         self.iterate, nodes, edges, mask
       )
+      nodes = p * nodes + (1 - p) * nodes.detach()
+      edges = p * edges + (1 - p) * edges.detach()
       if idx == rand_step:
         pre_nodes = nodes
         pre_edges = edges
@@ -425,4 +428,4 @@ class IterativeAttentionDistancePredictor(MaterializedAttentionDistancePredictor
     pre_predictions = self.predict(pre_nodes, pre_edges)
     predictions = self.predict(nodes, edges)
 
-    return (predictions, pre_predictions)
+    return (predictions, predictions)
