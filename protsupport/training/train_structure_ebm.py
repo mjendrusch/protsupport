@@ -125,22 +125,22 @@ if __name__ == "__main__":
     StructuredEnergy(
       6, 128, 10, 
       attention_size=128, heads=8,
-      mlp_depth=2, depth=6, batch_norm=True,
+      mlp_depth=2, depth=3, batch_norm=True,
       neighbours=15
     )
   )
-  integrator = PackedLangevin(rate=10, noise=0.001, steps=10, max_norm=None, clamp=None)
+  integrator = PackedLangevin(rate=50, noise=0.01, steps=20, max_norm=None, clamp=None)
   training = EBMTraining(
     net, data,
     batch_size=4,
-    decay=0.0,
+    decay=1.0,
     max_epochs=1000,
     integrator=integrator,
     buffer_probability=0.95,
     buffer_size=10000,
     optimizer_kwargs={"lr": 1e-4},
     device="cuda:0",
-    network_name="structure-ebm/no-decay",
+    network_name="distance-gan/pooled-ebm-1",
     verbose=True
   )
   final_net = training.train()

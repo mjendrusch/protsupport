@@ -156,15 +156,22 @@ def valid_callback(trn, inputs, outputs):
 if __name__ == "__main__":
   data = GANNet(sys.argv[1])
   valid_data = GANNet(sys.argv[2])
-  net = SDP(Recovery(128, 10, heads=8, depth=3, neighbours=15))
+  depth = 3
+  neighbours = 15
+  name = "recovery"
+  if len(sys.argv) == 5:
+    depth = int(sys.argv[3])
+    neighbours = int(sys.argv[4])
+    name = f"{name}/absolute-d{depth}-n{neighbours}"
+  net = SDP(Recovery(128, 10, heads=8, depth=depth, neighbours=neighbours))
   training = SupervisedTraining(
     net, data, valid_data,
-    [AngleMSE(), StochasticRGNLoss(1000, relative=True)],
-    batch_size=8,
+    [AngleMSE(), StochasticRGNLoss(100, relative=False)],
+    batch_size=32,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-4),
     device="cuda:0",
-    network_name="recovery",
+    network_name=name,
     valid_callback=valid_callback
   ).load()
   final_net = training.train()

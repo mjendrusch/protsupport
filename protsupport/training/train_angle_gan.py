@@ -20,7 +20,7 @@ from torchsupport.structured import scatter
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
 from protsupport.modules.structures import RelativeStructure
-from protsupport.modules.structured_gan import StructuredDiscriminator, StructuredGenerator
+from protsupport.modules.structured_gan import StructuredDiscriminator, StructuredGenerator, RefinedGenerator, ModifierGenerator
 from protsupport.modules.anglespace import PositionLookup
 from protsupport.modules.backrub import Backrub
 from protsupport.modules.transformer import attention_connected, linear_connected, assignment_connected
@@ -79,7 +79,7 @@ class AngleGANTraining(RothGANTraining):
     with torch.no_grad():
       data, protein = generated
       lookup = PositionLookup()
-      angs = data.tensor.cpu()
+      angs = data.tensor.cpu() % 6.3
       c_alpha, _ = lookup(angs[protein.indices.cpu() == 0], torch.zeros_like(protein.indices[protein.indices == 0].cpu()))
       c_alpha = c_alpha[:, 1]
       dist = (c_alpha[:, None] - c_alpha[None, :]).norm(dim=-1)
@@ -116,25 +116,25 @@ torch.backends.cudnn.enabled = False
 if __name__ == "__main__":
   data = GANNet(sys.argv[1], num_neighbours=15)
   gen = SDP(
-    StructuredGenerator(1024)
+    ModifierGenerator(1024, 128, 10, repeats=10)
   )
   disc = SDP(
     StructuredDiscriminator(
       6, 128, 10,
       attention_size=128, heads=8,
-      mlp_depth=2, depth=3, batch_norm=True, dropout=0.1,
+      mlp_depth=2, depth=1, batch_norm=True, dropout=0.1,
       neighbours=15, angles=True, distance_kernels=64,
       connected=attention_connected
     )
   )
   training = AngleGANTraining(
     gen, disc, data,
-    batch_size=4,
+    batch_size=16,
     max_epochs=1000,
     #optimizer=DiffMod,
     device="cuda:0",
-    network_name="structure-gan",
+    network_name="autoregressive/scheduled-test-fixed-1/another-gan-bites-the-dust-corrected-mod-1",
     verbose=True,
-    report_interval=100
+    report_interval=10
   ).load()
   final_net = training.train()

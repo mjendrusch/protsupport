@@ -63,16 +63,16 @@ if __name__ == "__main__":
   data = FoldNet(sys.argv[1], num_neighbours=num_neighbours, pass_mask=True)
   valid_data = FoldNet(sys.argv[2], num_neighbours=num_neighbours, pass_mask=True)
   net = SDP(MaterializedAttentionDistancePredictor(
-    pair_depth=5, seq_depth=2, size=64, attention_size=16, drop=drop
+    pair_depth=10, seq_depth=2, size=64, attention_size=16, value_size=64, drop=drop
   ))
   training = SupervisedTraining(
     net, data, valid_data,
     [TotalLoss()],
-    batch_size=2,
+    batch_size=4,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-4),
     device="cuda:0",
     network_name=f"fold/{name}",
     valid_callback=valid_callback
-  )
+  ).load()
   final_net = training.train()

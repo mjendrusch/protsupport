@@ -41,7 +41,8 @@ class GANNet(ProteinNetKNN):
     )
 
   def __getitem__(self, index):
-    window = slice(self.index[index], min(self.index[index + 1], self.index[index] + 64))
+    length = torch.randint(32, 65, (1,))[0]
+    window = slice(self.index[index], min(self.index[index + 1], self.index[index] + length))
     inds = self.inds[window]
     primary = self.pris[window] - 1
 
@@ -143,11 +144,11 @@ if __name__ == "__main__":
   )
   training = AngleGANTraining(
     gen, disc, data,
-    batch_size=4,
+    batch_size=8,
     max_epochs=1000,
     #optimizer=DiffMod,
     device="cuda:0",
-    network_name="distance-gan/meh-2",
+    network_name="distance-gan/distribution-fix",
     verbose=True,
     report_interval=10
   )

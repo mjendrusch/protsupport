@@ -40,7 +40,7 @@ class FragmentNet(ProteinNetKNN):
       n_jobs=n_jobs, cache=cache
     )
     self.radius = radius
-    self.backrub = Backrub(n_moves=0)
+    self.backrub = Backrub(n_moves=0)#10, phi=0.3, psi=0.3, tau=0.3)
     self.ors = torch.tensor(
       orientation(self.ters[1].numpy() / 100).transpose(2, 0, 1),
       dtype=torch.float
@@ -66,7 +66,7 @@ class FragmentNet(ProteinNetKNN):
     return mask
 
   def __getitem__(self, index):
-    window = slice(self.index[index], self.index[index + 1])
+    window = slice(self.index[index], min(self.index[index + 1], self.index[index] + 500))
     inds = self.inds[window]
     primary = self.pris[window] - 1
 
@@ -124,7 +124,7 @@ def valid_callback(trn, inputs, outputs):
     angles = mix.sample()
     means = torch.cat([param[0].unsqueeze(0) for param in parameters], dim=0)
     top = weights.argmax(dim=1)
-    #angles = means[top, torch.arange(means.size(1))]
+    mode_angles = means[top, torch.arange(means.size(1))]
     ang = angles
     angles = angle_target
 
@@ -192,11 +192,17 @@ def valid_callback(trn, inputs, outputs):
 
     plt.close("all")
 
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.scatter(angles[:, 1].numpy() % 6.3, angles[:, 2].numpy() % 6.3)
+    ax.scatter(mode_angles[:, 1].numpy() % 6.3, mode_angles[:, 2].numpy() % 6.3)
+    trn.writer.add_figure("rama mode", fig, trn.step_id)
+
 if __name__ == "__main__":
-  with torch.autograd.detect_anomaly():
-    data = FragmentNet(sys.argv[1])
-    valid_data = FragmentNet(sys.argv[2])
-    net = SDP(ProteinTransformer(6, 128, 10, heads=8, depth=3, neighbours=15, mix=20))
+  # with torch.autograd.detect_anomaly():
+    data = FragmentNet(sys.argv[1], radius=8)
+    valid_data = FragmentNet(sys.argv[2], radius=8)
+    net = SDP(ProteinTransformer(6, 128, 10, heads=8, depth=6, neighbours=15, mix=8, schedule=2))
     training = SupervisedTraining(
       net, data, valid_data,
       [MixtureOfVonMisesLoss()],
@@ -204,7 +210,7 @@ if __name__ == "__main__":
       max_epochs=1000,
       optimizer=lambda x: torch.optim.Adam(x, lr=1e-4, weight_decay=1e-4),
       device="cuda:0",
-      network_name="aaattention/linear-dep",
+      network_name="autoregressive/scheduled-test-fixed-1/another-4",
       valid_callback=valid_callback
     ).load()
     final_net = training.train()

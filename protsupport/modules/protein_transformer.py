@@ -181,7 +181,7 @@ class ProteinTransformer(nn.Module):
 
     distance_data = FlexibleRelativeStructure(structure, self.rbf)
     relative_data, _, _ = distance_data.message(
-      distances, distances.roll(1, dims=0)
+      distances.roll(1, dims=0), distances.roll(1, dims=0)
     )
     relative_structure = FlexibleOrientationStructure(structure, relative_data)
 
@@ -206,7 +206,8 @@ class ProteinTransformer(nn.Module):
     with torch.no_grad():
       sampled_angles = self.sample_angles(mean.detach(), concentration.detach(), factor.detach(), weights.detach())
       admix = torch.rand(angles.size(0)) < 0.5
-      angles[admix] = sampled_angles.roll(-1, dims=0)[admix]
+      angles[admix] = sampled_angles.roll(1, dims=0)[admix]
+      del sampled_angles
       tertiary, _ = self.lookup(
         angles.detach(),
         torch.zeros(
@@ -225,11 +226,15 @@ class ProteinTransformer(nn.Module):
     weights, mean, new_mean, concentration, factor = self.single_forward(
       angles, tertiary, structure, subgraph
     )
-    angles = angles.clone()
-    for idx in range(self.schedule):
-      weights, mean, new_mean, concentration, factor = self.sampling_step(
-        angles, mean, concentration, factor, weights, subgraph
-      )
+    with torch.no_grad():
+      angles = angles.clone()
+      for idx in range(self.schedule - 1):
+        weights, mean, new_mean, concentration, factor = self.sampling_step(
+          angles, mean, concentration, factor, weights, subgraph
+        )
+    weights, mean, new_mean, concentration, factor = self.single_forward(
+      angles, tertiary, structure, subgraph
+    )
 
     parameters = [
       (new_mean[:, :, idx], concentration[:, :, idx])

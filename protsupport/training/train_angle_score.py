@@ -95,15 +95,21 @@ class EBMTraining(SlicedScoreTraining):
     return to_device((result, data, *args), self.device)
 
   def noise(self, data):
-    scale = torch.randint(0, self.n_sigma, (data.tensor.size(0),))
+    scale = torch.randint(0, self.n_sigma, (len(data.lengths),))
+    scale = torch.repeat_interleave(scale, torch.tensor(data.lengths, dtype=torch.long))
     sigma = self.sigma * self.factor ** scale.float()
     sigma = sigma.to(self.device)
     sigma = sigma.view(*sigma.shape, *((data.tensor.dim() - sigma.dim()) * [1]))
     noise = data.clone()
     noise.tensor = data.tensor + sigma * torch.randn_like(data.tensor)
+    tmp = data.clone()
+    tmp.tensor = sigma
+    sigma = tmp
+    print("CHECK", data.lengths, sigma.lengths, data.tensor.shape, sigma.tensor.shape)
     return noise, sigma
 
   def energy_loss(self, score, data, noisy, sigma):
+    sigma = sigma.tensor
     vectors = self.noise_vectors(score)
     make_differentiable(vectors)
 
@@ -173,21 +179,21 @@ if __name__ == "__main__":
   net = SDP(
     StructuredScore(
       6, 128, 10,
-      attention_size=128, heads=8,
-      mlp_depth=2, depth=2, batch_norm=True, dropout=0.1,
-      neighbours=15, angles=True, distance_kernels=64,
+      attention_size=32, heads=8,
+      mlp_depth=2, depth=3, batch_norm=True, dropout=0.1,
+      neighbours=15, angles=True, distance_kernels=32,
       connected=attention_connected
     )
   )
   training = EBMTraining(
     net, data,
     sigma=3.15,
-    batch_size=4,
+    batch_size=32,
     max_epochs=1000,
     #optimizer=DiffMod,
     optimizer_kwargs={"lr": 1e-4},
     device="cuda:0",
-    network_name="structure-ebm/sliced-shallow",
+    network_name="distance-gan/pooled-score",
     verbose=True,
     report_interval=100
   ).load()

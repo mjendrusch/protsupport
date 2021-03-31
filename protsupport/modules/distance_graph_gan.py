@@ -24,7 +24,7 @@ class DistanceBlock(nn.Module):
                normalization=lambda x: x, connected=attention_connected):
     super(DistanceBlock, self).__init__()
     self.batch_norm = batch_norm
-    self.attention = ts.NeighbourLinear(size + 1, distance_size, normalization=normalization)
+    self.attention = ts.NeighbourDotMultiHeadAttention(size + 1, distance_size, 128, heads=8, query_size=distance_size, normalization=normalization)
     self.local = MLP(
       distance_size, distance_size,
       hidden_size=hidden_size,
@@ -119,8 +119,8 @@ class DistanceTransformerEncoderBlock(nn.Module):
     distance_features = self.fw(node_pos_features, distance_features + 0.1 * torch.randn_like(distance_features), distance_structure)
     node_features = self.rv(node_features + 0.1 * torch.randn_like(node_features), dist_pos_features, node_structure)
 
-    indices = node_structure.indices
-    node_features = node_features + ts.scatter.batched(self.conv, node_features, subgraph.indices)
+    #indices = node_structure.indices
+    #node_features = node_features + ts.scatter.batched(self.conv, node_features, subgraph.indices)
     return node_features, distance_features
 
 class NeighbourSelector(nn.Module):
@@ -249,7 +249,7 @@ def irange(indices, reverse=False):
 class DistanceGenerator(nn.Module):
   def __init__(self, in_size, distance_size=128, hidden_size=128, angles=512,
                fragment_size=5, attention_size=128, heads=8, depth=3,
-               mlp_depth=3, dropout=0.1, activation=func.relu_, batch_norm=False,
+               mlp_depth=3, dropout=0.1, activation=func.relu_, batch_norm=True,
                pre_norm=True, normalization=lambda x: x, connected=attention_connected):
     super(DistanceGenerator, self).__init__()
     self.in_size = in_size
@@ -269,7 +269,7 @@ class DistanceGenerator(nn.Module):
 
   def sample(self, batch_size):
     latents = torch.randn(batch_size, self.in_size)
-    distances = torch.zeros(batch_size, self.distance_size)
+    distances = torch.randn(batch_size, self.distance_size)
     lengths = torch.randint(32, 64, (batch_size,))
     latents = torch.repeat_interleave(latents, lengths, dim=0)
     #latents += 0.1 * torch.randn_like(latents)
@@ -279,7 +279,11 @@ class DistanceGenerator(nn.Module):
     indices = torch.repeat_interleave(indices, lengths, dim=0)
     structure = ts.SubgraphStructure(indices)
     structure.lengths = list(lengths)
-    return latents, distances, structure
+    return (
+      ts.PackedTensor(latents, lengths=list(lengths)),
+      ts.PackedTensor(distances, lengths=list(distance_lengths)),
+      structure
+    )
 
   def forward(self, sample):
     latent, distances, structure = sample
@@ -296,10 +300,10 @@ class DistanceGenerator(nn.Module):
     node_out, dist_out = self.transformer(node_out, dist_out, node_struc, dist_struc, structure)
 
     angles = self.angle_lookup(node_out)
-    # distances, _ = ts.scatter.pairwise_no_pad(lambda x, y: (x - y) ** 2, node_out, structure.indices)
-    # distances = (distances * dist_out.sigmoid()).sum(dim=1, keepdim=True)
+    #distances, _ = ts.scatter.pairwise_no_pad(lambda x, y: (x - y) ** 2, node_out, structure.indices)
+    #distances = (distances * dist_out.sigmoid()).sum(dim=1, keepdim=True)
     distances = self.distance_lookup(dist_out)
-    distances = (1 + distances.exp()).log()
+    distances = func.softplus(distances)
 
     return (
       ts.PackedTensor(angles, lengths=list(structure.counts)),
@@ -310,7 +314,7 @@ class DistanceGenerator(nn.Module):
 class DistanceDiscriminator(nn.Module):
   def __init__(self, distance_size=128, hidden_size=128, angles=512,
                fragment_size=5, attention_size=128, heads=8, depth=3,
-               mlp_depth=3, dropout=0.1, activation=func.relu_, batch_norm=False,
+               mlp_depth=3, dropout=0.1, activation=func.relu_, batch_norm=True,
                pre_norm=True, normalization=lambda x: x, connected=attention_connected):
     super(DistanceDiscriminator, self).__init__()
     self.angle_lookup = nn.Linear(3, hidden_size)

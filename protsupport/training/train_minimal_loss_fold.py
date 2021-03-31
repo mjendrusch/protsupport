@@ -25,8 +25,8 @@ def valid_callback(training, data, predictions):
   inputs, labels = data
   predictions = predictions[0][0]
   ind = torch.arange(predictions[3].size(1), dtype=torch.float, device=predictions[3].device)
-  mean = predictions[3] * ind[None, :, None, None]
-  mean = mean.mean(dim=1, keepdim=True) / 42
+  mean = predictions[3].softmax(dim=1) * ind[None, :, None, None]
+  mean = mean.sum(dim=1, keepdim=True) / 42
   mean = mean.repeat_interleave(3, dim=1)
   predictions = predictions[3].argmax(dim=1).to(torch.float)[:, None]
   pred = predictions.repeat_interleave(3, dim=1) / 42
@@ -47,25 +47,25 @@ class TotalLoss(nn.Module):
     mask2d = mask[:, None, :] * mask[:, :, None]
     msum = mask.float().sum() + 1
     m2sum = mask2d.float().sum() + 1
-    loss = (self.ce(inputs[0], angle) * mask.float()).sum() / msum
-    loss += (self.ce(inputs[1], dihedral) * mask.float()).sum() / msum
-    loss += (self.kl(inputs[2].log_softmax(dim=1), pssm) * mask[:, None].float()).mean(dim=1).sum() / msum
-    loss += (self.ce(inputs[3], distances) * mask2d.float()).sum() / m2sum
+    #loss = (self.ce(inputs[0], angle) * mask.float()).sum() / msum
+    #loss += (self.ce(inputs[1], dihedral) * mask.float()).sum() / msum
+    #loss += (self.kl(inputs[2].log_softmax(dim=1), pssm) * mask[:, None].float()).mean(dim=1).sum() / msum
+    loss = (self.ce(inputs[3], distances) * mask2d.float()).sum() / m2sum
     loss += (self.ce(inputs[4], contact_angles) * mask2d.float()).sum() / m2sum
     loss += (self.ce(inputs[5], contact_dihedrals) * mask2d.float()).sum() / m2sum
     loss += (self.ce(inputs[6], into_dihedrals) * mask2d.float()).sum() / m2sum
-    loss += (self.ce(inputs[7], angle) * mask.float()).sum() / msum
-    loss += (self.ce(inputs[8], dihedral) * mask.float()).sum() / msum
-    loss += (self.kl(inputs[9].log_softmax(dim=1), pssm) * mask[:, None].float()).mean(dim=1).sum() / msum
-    loss += (self.ce(inputs[10], angle) * mask.float()).sum() / msum
-    loss += (self.ce(inputs[11], dihedral) * mask.float()).sum() / msum
-    loss += (self.kl(inputs[12].log_softmax(dim=1), pssm) * mask[:, None].float()).mean(dim=1).sum() / msum
+    #loss += (self.ce(inputs[7], angle) * mask.float()).sum() / msum
+    #loss += (self.ce(inputs[8], dihedral) * mask.float()).sum() / msum
+    #loss += (self.kl(inputs[9].log_softmax(dim=1), pssm) * mask[:, None].float()).mean(dim=1).sum() / msum
+    #loss += (self.ce(inputs[10], angle) * mask.float()).sum() / msum
+    #loss += (self.ce(inputs[11], dihedral) * mask.float()).sum() / msum
+    #loss += (self.kl(inputs[12].log_softmax(dim=1), pssm) * mask[:, None].float()).mean(dim=1).sum() / msum
     return loss
 
 if __name__ == "__main__":
   num_neighbours = 15
   drop = 0.5 if len(sys.argv) < 4 else float(sys.argv[3])
-  name = f"checkpointed-drop-{drop}-3"
+  name = f"checkpointed-min-drop-{drop}-4"
   data = FoldNet(sys.argv[1], num_neighbours=num_neighbours, pass_mask=True)
   valid_data = FoldNet(sys.argv[2], num_neighbours=num_neighbours, pass_mask=True)
   net = SDP(CheckpointAttentionDistancePredictor(

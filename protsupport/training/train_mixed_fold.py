@@ -14,7 +14,7 @@ from torchsupport.structured import DataParallel as SDP
 
 from protsupport.data.fold import FoldNet
 from protsupport.modules.fold import (
-  MaterializedAttentionDistancePredictor, CheckpointAttentionDistancePredictor)
+  MaterializedAttentionDistancePredictor, MixedDistancePredictor)
 
 class DoubleFoldNet(FoldNet):
   def __getitem__(self, index):
@@ -65,11 +65,11 @@ class TotalLoss(nn.Module):
 if __name__ == "__main__":
   num_neighbours = 15
   drop = 0.5 if len(sys.argv) < 4 else float(sys.argv[3])
-  name = f"checkpointed-drop-{drop}-3"
+  name = f"mixed-drop-{drop}-1"
   data = FoldNet(sys.argv[1], num_neighbours=num_neighbours, pass_mask=True)
   valid_data = FoldNet(sys.argv[2], num_neighbours=num_neighbours, pass_mask=True)
-  net = SDP(CheckpointAttentionDistancePredictor(
-    pair_depth=16, seq_depth=2, size=128, attention_size=32, value_size=16, drop=drop, split=16
+  net = SDP(MixedDistancePredictor(
+    pair_depth=5, seq_depth=2, size=128, attention_size=32, value_size=16, drop=drop, split=5
   ))
   training = SupervisedTraining(
     net, data, valid_data,
@@ -82,5 +82,5 @@ if __name__ == "__main__":
     num_workers=12,
     network_name=f"fold/{name}",
     valid_callback=valid_callback
-  ).load()
+  )
   final_net = training.train()

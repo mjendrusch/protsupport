@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as func
 from torch.nn.utils.spectral_norm import spectral_norm
 from torchsupport.training.energy import EnergyTraining
-from torchsupport.training.samplers import PackedLangevin, Langevin
+from torchsupport.training.samplers import PackedLangevin, AugmentedLangevin
 
 from torchsupport.modules.basic import MLP
 from torchsupport.modules import replace_gradient
@@ -249,21 +249,35 @@ class MaterializedEnergy(nn.Module):
 
     return predictions
 
+def transform(data):
+  struc, seq = data
+  flip = random.random() < 0.5
+  if flip:
+    offset = 1.0 * torch.randn_like(struc)
+    offset = offset.cumsum(dim=-1)
+    struc = struc + offset - struc.mean(dim=-1, keepdim=True)
+  else:
+    count = random.randrange(1, 10)
+    seq = seq.roll(count, dims=2)
+  return (struc, seq)
+
 if __name__ == "__main__":
   data = EBMNet(sys.argv[1], num_neighbours=15, N=100)
   net = SDP(
     MaterializedEnergy(pair_depth=4, size=100, value_size=16, kernel_size=1, drop=0.0)
   )
-  integrator = Langevin(
+  integrator = AugmentedLangevin(
     rate=(1000.0, 50.0),
     noise=(1.0, 0.1),
     steps=50,
+    transform_interval=50,
+    transform=transform,
     max_norm=None,
     clamp=(None, (0, 1))
   )
   training = EBMTraining(
     net, data,
-    batch_size=6,
+    batch_size=16,
     decay=1.0,
     max_epochs=5000,
     integrator=integrator,
@@ -271,8 +285,9 @@ if __name__ == "__main__":
     buffer_size=10000,
     optimizer_kwargs={"lr": 1e-3, "betas": (0.0, 0.99)},
     device="cuda:0",
-    network_name="materialized-ebm/seqstruct-1",
+    network_name="materialized-ebm/seqstruct-6",
     verbose=True,
+    checkpoint_interval=50,
     report_interval=1
   )
   final_net = training.train()

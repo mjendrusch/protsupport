@@ -9,14 +9,16 @@ import torch.nn as nn
 import torch.nn.functional as func
 from torchsupport.training.training import SupervisedTraining
 
-from torchsupport.structured import PackedTensor, ConstantStructure
+from torchsupport.structured import PackedTensor, ConstantStructure, SubgraphStructure
 from torchsupport.structured import DataParallel as SDP
 from protsupport.training.train_sequence_ebm import DDP
 
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
-from protsupport.modules.cond_structured_transformer import ConditionalStructuredTransformer
+from protsupport.modules.cond_structured_transformer import ConditionalPrestructuredTransformer
+from protsupport.modules.structures import DistanceRelativeStructure
 from protsupport.modules.backrub import Backrub
+from protsupport.modules.transformer import attention_connected, linear_connected, assignment_connected
 
 def valid_callback(training, data, predictions):
   inputs, labels = data
@@ -43,6 +45,26 @@ class CondTransformerNet(ProteinNetKNN):
       dtype=torch.float
     )
 
+  def fast_angle(self, distances, x, y, z):
+    c = distances[:, x, z]
+    a = distances[:, x, y]
+    b = distances[:, y, z]
+    angle = torch.acos((a ** 2 + b ** 2 - c ** 2) / (2 * a * b))
+    
+    inds = torch.arange(distances.size(-1))
+    angle[torch.isnan(angle)] = 0
+    return angle
+
+  def fast_dihedral(self, distances, apex, x_1, x_2, x_3):
+    phi_12 = self.fast_angle(distances, x_1, apex, x_2)
+    phi_13 = self.fast_angle(distances, x_1, apex, x_3)
+    phi_23 = self.fast_angle(distances, x_2, apex, x_3)
+    phi = torch.acos(((phi_13.cos() - phi_12.cos() * phi_23.cos()) / (phi_12.sin() * phi_23.sin())).clamp(-1, 1))
+    
+    phi[torch.isnan(phi)] = 0
+    
+    return phi
+
   def __getitem__(self, index):
     # Extract the boundaries of a whole protein
     window = slice(self.index[index], self.index[index + 1])
@@ -50,7 +72,7 @@ class CondTransformerNet(ProteinNetKNN):
 
     # Make me a mask
     # Predict at least 5% of the sequence up to the whole seq
-    mask = np.random.choice(seq_len, size=np.random.randint(seq_len // 20, seq_len), replace=False)
+    mask = np.random.choice(seq_len, size=np.random.randint(1, seq_len), replace=False)
     mask = torch.tensor(mask, dtype=torch.long)
     mask_binary = torch.zeros(seq_len, dtype=torch.uint8)
     mask_binary[mask] = 1
@@ -63,41 +85,63 @@ class CondTransformerNet(ProteinNetKNN):
     primary_onehot = torch.zeros((seq_len, 21), dtype=torch.float)
     primary_onehot[torch.arange(seq_len), primary_masked] = 1
 
+    # Prepare neighborhood structure
+    inds = self.inds[window]
+    neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
+
     # Prepare orientation infos
     orientation = self.ors[window, :, :].view(seq_len, -1)
 
     tertiary = self.ters[:, :, window]
-    distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
-    distances = distances[:, 1] / 100
+    tertiary, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
+    tertiary = tertiary[:, 1] / 100
+    #tertiary = tertiary + 0.01 * torch.randn_like(tertiary) # corruption FIXME
     angles = angles.transpose(0, 1)
 
     indices = torch.tensor(
       range(window.start, window.stop),
       dtype=torch.float
     )
-    indices = indices.view(-1, 1)
-    orientation = torch.cat((distances, orientation, indices), dim=1)
+    relative_indices = indices[None, :] - indices[:, None]
+    relative_sin = (relative_indices / 10).sin()
+    relative_cos = (relative_indices / 10).cos()
+    
+    distances = (tertiary[None, :, :] - tertiary[:, None, :]).norm(dim=-1)
+    distances = distances.unsqueeze(0)
+    
+    inds = torch.arange(distances.size(-1))
+    idx_a = inds[:, None]
+    idy_a = inds[None, :]
+    chain_angle = self.fast_angle(distances, idx_a - 1, idx_a, (idx_a + 1) % distances.size(-1))[:, :, 0].permute(1, 0)
+    chain_dihedral = self.fast_dihedral(distances, idx_a - 1, idx_a - 2, idx_a, (idx_a + 1) % distances.size(-1))[:, :, 0].permute(1, 0)
+    contact_angles = self.fast_angle(distances, idx_a - 1, idx_a, idy_a)
+    contact_dihedrals = self.fast_dihedral(distances, idx_a, idx_a - 1, idy_a, idy_a - 1)
+    into_contact_dihedrals = self.fast_dihedral(distances, idx_a - 1, idx_a - 2, idx_a, idy_a)
 
-    # Prepare neighborhood structure
-    inds = self.inds[window]
-    neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
+    angle_features = torch.cat((chain_angle.sin(), chain_angle.cos(), chain_dihedral.sin(), chain_dihedral.cos()), dim=1)
 
-    # Prepare angle features
-    sin = torch.sin(angles)
-    cos = torch.cos(angles)
-    angle_features = torch.cat((sin, cos), dim=1)
+    orientation = torch.cat((distances, contact_angles.sin(), contact_angles.cos(), contact_dihedrals.sin(), contact_dihedrals.cos(), into_contact_dihedrals.sin(), into_contact_dihedrals.cos(), relative_sin[None], relative_cos[None]), dim=0)
+    orientation_slice = orientation[:, torch.arange(neighbours.connections.size(0))[:, None], neighbours.connections].permute(1, 2, 0).contiguous()
+
+    # Prepare local features
+    dmap = (tertiary[None, :] - tertiary[:, None]).norm(dim=-1)
+    closest = torch.arange(tertiary.size(0))
+    closest = abs(closest[None, :] - closest[:, None]).topk(15, dim=1).indices
+    local_features = dmap[torch.arange(dmap.size(0))[:, None], closest] / 100
+
+    protein = SubgraphStructure(torch.zeros_like(inds))
 
     inputs = (
       PackedTensor(angle_features),
       PackedTensor(primary_onehot),
-      PackedTensor(orientation),
-      neighbours
+      PackedTensor(orientation_slice),
+      neighbours, protein
     )
 
     targets = (
       PackedTensor(primary, split=False),
       PackedTensor(mask_binary, split=False)
-      )
+    )
 
     return inputs, targets
 
@@ -156,7 +200,7 @@ class CondSeqResampleNet(CondTransformerNet):
       dtype=torch.float
     )
     indices = indices.view(-1, 1)
-    orientation = torch.cat((distances, orientation, indices), dim=1)
+    orientation = torch.cat((distances, indices), dim=1)
 
     # Prepare neighborhood structure
     inds = self.inds[window]
@@ -189,6 +233,11 @@ class MaskedLoss(nn.Module):
 
   def forward(self, inputs, targets):
     targ, mask = targets
+    aas = targ[mask]
+    unique, count = aas.unique(return_counts=True)
+    weights = torch.ones(20, device=inputs.device)
+    weights[unique] = 1 / count.float()
+    loss = nn.CrossEntropyLoss(weight=weights)
     return self.loss(inputs[mask], targ[mask])
     # except:
     #   return torch.tensor(0, dtype=inputs.dtype, device=inputs.device,)
@@ -203,20 +252,20 @@ class ConditionalStructuredTransformerTraining(SupervisedTraining):
     super(ConditionalStructuredTransformerTraining, self).each_step()
     learning_rate = torch.pow(torch.tensor(128.0), -0.5)
     step_num = torch.tensor(float(self.step_id + 1))
-    learning_rate *= min(
-      torch.pow(step_num, -0.5),
-      step_num * torch.pow(torch.tensor(4000.0), -1.5)
-    )
-    self.optimizer.param_groups[0]["lr"] = learning_rate
+    #learning_rate *= min(
+    #  torch.pow(step_num, -0.5),
+    #  step_num * torch.pow(torch.tensor(4000.0), -1.5)
+    #)
+    #self.optimizer.param_groups[0]["lr"] = learning_rate
 
 if __name__ == "__main__":
-  data = CondSeqResampleNet(sys.argv[1], num_neighbours=15, n_backrub=10)
+  data = CondTransformerNet(sys.argv[1], num_neighbours=15, n_backrub=20)
   valid_data = CondTransformerNet(sys.argv[2], num_neighbours=15, n_backrub=0) # Validation with out augmentation
   net = SDP(
-    ConditionalStructuredTransformer(
-    6, 128, 10, 
-    attention_size=128, heads=8,
-    mlp_depth=2, depth=9, batch_norm=True
+    ConditionalPrestructuredTransformer(
+    4, 128, 9, 
+    attention_size=128, heads=8, connected=attention_connected, sequence=True,
+    mlp_depth=2, depth=9, batch_norm=True, relative=DistanceRelativeStructure, local=False#True
   ))
   training = ConditionalStructuredTransformerTraining(
     net, data, valid_data,
@@ -225,8 +274,8 @@ if __name__ == "__main__":
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x), # LR scheduled 
     device="cuda:0",
-    network_name="cond-structured-transformer/15-9-drop-10-rub-10-pssm-bs-32-clone",
+    network_name="sched-structured-transformer/15-9-drop-10-rub-10-prestructured-angle-sequence",
     valid_callback=valid_callback,
     report_interval=10
-  ).load()
+  )
   final_net = training.train()

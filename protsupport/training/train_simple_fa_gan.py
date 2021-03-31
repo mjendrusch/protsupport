@@ -60,7 +60,7 @@ class GANNet(ProteinNetKNN):
 
     tertiary = self.ters[:, :, window]
     tertiary, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
-    tertiary = tertiary[:, 1] / 100
+    tertiary = tertiary.reshape(-1, 3) / 100
 
     protein = SubgraphStructure(torch.zeros(tertiary.size(0), dtype=torch.long))
     #neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
@@ -81,43 +81,22 @@ class AngleGANTraining(RothGANTraining):
   def mixing_key(self, data):
     return data[0]
 
-  def triangle_loss(self, generated):
-    """Loss term explicitly enforcing the triangle inequality."""
-    distances, *_ = generated
-    size = distances.size(-1)
-    pos = torch.randint(size, (3, distances.size(0), 100))
-    start_jump = distances[torch.arange(distances.size(0))[:, None], 0, pos[0], pos[1]]
-    jump_stop = distances[torch.arange(distances.size(0))[:, None], 0, pos[1], pos[2]]
-    start_stop = distances[torch.arange(distances.size(0))[:, None], 0, pos[0], pos[2]]
-    overshoot = start_stop - start_jump - jump_stop
-    loss = torch.max(overshoot, torch.zeros_like(overshoot))
-    return loss.mean()
-
-  def distance_loss(self, generated):
-    """Loss term explicitly enforcing Ca-Ca distance constraints."""
-    distances, *_ = generated
-    distances = distances * 100
-    size = distances.size(-1)
-    off_one = distances[:, 0, torch.arange(size - 1), 1 + torch.arange(size - 1)]
-    off_all = ((distances[(distances < 3.5) * (distances != 0.0)] - 3.5) ** 2).mean()
-    off_one = ((off_one - 3.8) ** 2).mean()
-    return off_one# + off_all
-
-  def generator_step_loss(self, data, generated, sample):
-    loss = super().generator_step_loss(data, generated, sample)
-    triangle_inequality = self.triangle_loss(generated)
-    offset_losses = self.distance_loss(generated)
-    self.current_losses["triangle inequality"] = float(triangle_inequality)
-    self.current_losses["Ca-Ca offset"] = float(offset_losses)
-    return loss# + triangle_inequality + offset_losses / 10
+  def each_step(self):
+    super().each_step()
+    learning_rate = 5e-4
+    step_num = torch.tensor(float(self.step_id + 1))
+    self.generator_optimizer.param_groups[0]["lr"] = learning_rate * 0.5 ** (step_num / 5000)
+    self.discriminator_optimizer.param_groups[0]["lr"] = learning_rate * 0.5 ** (step_num / 5000)
 
   def each_generate(self, data, generated, sample):
     with torch.no_grad():
       distances, *_ = generated
       dist = distances.cpu()
 
-      img = torch.cat([item for item in dist], dim=-1).numpy()
-      self.writer.add_image("dist", img, self.step_id)
+      dist = dist.numpy()
+      fig, ax = plt.subplots()
+      ax.matshow(dist[0, 0])
+      self.writer.add_figure("dist", fig, self.step_id)
 
 class DDP(nn.Module):
   def __init__(self, net):
@@ -211,18 +190,19 @@ class StyleGenerator(nn.Module):
     return (out,)
 
 class StupidGenerator(nn.Module):
-  def __init__(self, depth=4):
+  def __init__(self, depth=6):
     super().__init__()
-    self.preprocess = nn.Linear(512, 128 * 4 * 4)
+    self.preprocess = nn.Linear(512, 128 * 4 * 4, bias=False)
     self.blocks = nn.ModuleList([
       nn.Sequential(
         nn.Conv2d(128, 128, 3, padding=1),
-        #nn.InstanceNorm2d(128),
-        nn.LeakyReLU(0.2)
+        nn.InstanceNorm2d(128),
+        nn.ReLU()
       )
       for idx in range(depth)
     ])
-    self.postprocess = nn.Conv2d(128, 1, 3, padding=1)
+    self.inflate = nn.Conv2d(128, 9 * 64, 3, padding=1)
+    self.postprocess = nn.Conv2d(64, 1, 3, padding=1)
 
   def sample(self, batch_size):
     return torch.randn(batch_size, 512)
@@ -230,9 +210,9 @@ class StupidGenerator(nn.Module):
   def forward(self, sample):
     out = self.preprocess(sample).view(-1, 128, 4, 4)
     for idx, block in enumerate(self.blocks):
-      out = 0.1 * block(out) + out
+      out = block(out)
       out = func.interpolate(out, scale_factor=2)
-    out = func.softplus(self.postprocess(out))
+    out = func.softplus(self.postprocess(func.pixel_shuffle(self.inflate(out), 3)))
     out = (out + out.permute(0, 1, 3, 2)) / 2
     size = out.size(-1)
     out[:, :, torch.arange(size), torch.arange(size)] = 0
@@ -292,17 +272,17 @@ class MaskedGenerator(nn.Module):
     return (out, given, g_mask, r_mask, range_mask)
 
 class Discriminator(nn.Module):
-  def __init__(self, depth=4):
+  def __init__(self, depth=8):
     super().__init__()
-    self.preprocess = nn.Conv2d(1, 128, 5, padding=2)
+    self.preprocess = nn.Conv2d(1, 128, 3, padding=2)
     self.blocks = nn.ModuleList([
       nn.Sequential(
         nn.Conv2d(128, 128, 3, padding=1),
-        #nn.InstanceNorm2d(128),
-        nn.LeakyReLU(0.2),
+        nn.InstanceNorm2d(128),
+        nn.ReLU(),
         nn.Conv2d(128, 128, 3, dilation=2, padding=2),
-        #nn.InstanceNorm2d(128),
-        nn.LeakyReLU(0.2)
+        nn.InstanceNorm2d(128),
+        nn.ReLU()
       )
       for idx in range(depth)
     ])
@@ -311,43 +291,12 @@ class Discriminator(nn.Module):
   def forward(self, inputs):
     inputs, *_ = inputs
     out = self.preprocess(inputs)
+    out = func.avg_pool2d(out, 4)
     for block in self.blocks:
-      out = out + 0.1 * block(out)
+      out = block(out)
       out = func.avg_pool2d(out, 2)
     out = func.adaptive_avg_pool2d(out, 1).view(-1, 128)
     out = self.predict(func.dropout(out, 0.5))
-    return out
-
-class LocalDiscriminator(Discriminator):
-  def __init__(self, depth=4, local_depth=8):
-    super().__init__(depth=depth)
-    self.local = nn.ModuleList([
-      nn.Sequential(
-        nn.Conv2d(128, 128, 3, padding=1),
-        nn.InstanceNorm2d(128),
-        nn.ReLU()
-      )
-      for idx in range(local_depth)
-    ])
-    self.local_predict = nn.Linear(256, 1)
-
-  def forward(self, inputs):
-    inputs, *_ = inputs
-    out = self.preprocess(inputs)
-    local_out = out
-    size = out.size(-1)
-    ind = torch.arange(size, device=out.device)
-    for block in self.local:
-      local_out = local_out + block(local_out)
-    local_out = local_out[:, :, ind, ind]
-    local_out = local_out.mean(dim=-1)
-
-    for block in self.blocks:
-      out = out + block(out)
-      out = func.avg_pool2d(out, 2)
-    out = func.adaptive_avg_pool2d(out, 1).view(-1, 128)
-    out = torch.cat((out, local_out), dim=1)
-    out = self.local_predict(func.dropout(out, 0.5))
     return out
 
 class MaskedDiscriminator(nn.Module):
@@ -380,18 +329,18 @@ class MaskedDiscriminator(nn.Module):
 if __name__ == "__main__":
   data = GANNet(sys.argv[1], num_neighbours=15, N=256)
   gen = SDP(
-    StupidGenerator(depth=6)
+    StupidGenerator()
   )
   disc = SDP(
     Discriminator(depth=6)
   )
   training = AngleGANTraining(
     gen, disc, data,
-    batch_size=16,
+    batch_size=8,
     max_epochs=1000,
     #optimizer=DiffMod,
     device="cuda:0",
-    network_name="distance-gan-new/triangle-256-5",
+    network_name="distance-gan/full-atom-inflate",
     verbose=True,
     report_interval=10
   )

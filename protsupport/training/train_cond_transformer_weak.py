@@ -16,6 +16,7 @@ from protsupport.training.train_sequence_ebm import DDP
 from protsupport.data.proteinnet import ProteinNet, ProteinNetKNN
 from protsupport.utils.geometry import orientation
 from protsupport.modules.cond_structured_transformer import ConditionalStructuredTransformer
+from protsupport.modules.structures import DistanceRelativeStructure
 from protsupport.modules.backrub import Backrub
 
 def valid_callback(training, data, predictions):
@@ -69,6 +70,7 @@ class CondTransformerNet(ProteinNetKNN):
     tertiary = self.ters[:, :, window]
     distances, angles = self.backrub(tertiary[[0, 1, 3]].permute(2, 0, 1))
     distances = distances[:, 1] / 100
+    distances = distances + 0.01 * torch.randn_like(distances) # corruption FIXME
     angles = angles.transpose(0, 1)
 
     indices = torch.tensor(
@@ -76,19 +78,20 @@ class CondTransformerNet(ProteinNetKNN):
       dtype=torch.float
     )
     indices = indices.view(-1, 1)
-    orientation = torch.cat((distances, orientation, indices), dim=1)
+    orientation = torch.cat((distances, indices), dim=1)
 
     # Prepare neighborhood structure
     inds = self.inds[window]
     neighbours = ConstantStructure(0, 0, (inds - self.index[index]).to(torch.long))
 
-    # Prepare angle features
-    sin = torch.sin(angles)
-    cos = torch.cos(angles)
-    angle_features = torch.cat((sin, cos), dim=1)
+    # Prepare local features
+    dmap = (distances[None, :] - distances[:, None]).norm(dim=-1)
+    closest = torch.arange(distances.size(0))
+    closest = abs(closest[None, :] - closest[:, None]).topk(15, dim=1).indices
+    local_features = dmap[torch.arange(dmap.size(0))[:, None], closest] / 100
 
     inputs = (
-      PackedTensor(angle_features),
+      PackedTensor(local_features),
       PackedTensor(primary_onehot),
       PackedTensor(orientation),
       neighbours
@@ -97,7 +100,7 @@ class CondTransformerNet(ProteinNetKNN):
     targets = (
       PackedTensor(primary, split=False),
       PackedTensor(mask_binary, split=False)
-      )
+    )
 
     return inputs, targets
 
@@ -156,7 +159,7 @@ class CondSeqResampleNet(CondTransformerNet):
       dtype=torch.float
     )
     indices = indices.view(-1, 1)
-    orientation = torch.cat((distances, orientation, indices), dim=1)
+    orientation = torch.cat((distances, indices), dim=1)
 
     # Prepare neighborhood structure
     inds = self.inds[window]
@@ -189,7 +192,12 @@ class MaskedLoss(nn.Module):
 
   def forward(self, inputs, targets):
     targ, mask = targets
-    return self.loss(inputs[mask], targ[mask])
+    aas = targ[mask]
+    unique, count = aas.unique(return_counts=True)
+    weights = torch.ones(20, device=inputs.device)
+    weights[unique] = 1 / count.float()
+    loss = nn.CrossEntropyLoss(weight=weights)
+    return loss(inputs[mask], targ[mask])
     # except:
     #   return torch.tensor(0, dtype=inputs.dtype, device=inputs.device,)
 
@@ -210,13 +218,13 @@ class ConditionalStructuredTransformerTraining(SupervisedTraining):
     self.optimizer.param_groups[0]["lr"] = learning_rate
 
 if __name__ == "__main__":
-  data = CondSeqResampleNet(sys.argv[1], num_neighbours=15, n_backrub=10)
+  data = CondTransformerNet(sys.argv[1], num_neighbours=15, n_backrub=20)
   valid_data = CondTransformerNet(sys.argv[2], num_neighbours=15, n_backrub=0) # Validation with out augmentation
   net = SDP(
     ConditionalStructuredTransformer(
-    6, 128, 10, 
+    15, 128, 3, 
     attention_size=128, heads=8,
-    mlp_depth=2, depth=9, batch_norm=True
+    mlp_depth=2, depth=9, batch_norm=True, relative=DistanceRelativeStructure
   ))
   training = ConditionalStructuredTransformerTraining(
     net, data, valid_data,
@@ -225,8 +233,8 @@ if __name__ == "__main__":
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x), # LR scheduled 
     device="cuda:0",
-    network_name="cond-structured-transformer/15-9-drop-10-rub-10-pssm-bs-32-clone",
+    network_name="cond-structured-transformer/15-9-drop-10-rub-10-pssm-bs-32-weak-weighted-corrupted-large",
     valid_callback=valid_callback,
     report_interval=10
-  ).load()
+  )
   final_net = training.train()

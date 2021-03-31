@@ -216,6 +216,57 @@ class RefinedGenerator(StructuredGenerator):
 
     return result, subgraph
 
+class ModifierGenerator(RefinedGenerator):
+  def __init__(self, in_size, size, distance_size, hidden_size=800, neighbours=15, distance_kernels=64, angles=512, fragment_size=5, depth=2, repeats=5):
+    super().__init__(in_size, size, distance_size, hidden_size=hidden_size,
+                     neighbours=neighbours, distance_kernels=distance_kernels,
+                     angles=angles, fragment_size=fragment_size, depth=depth)
+    self.repeats = repeats
+
+  def sample(self, batch_size):
+    lengths = torch.randint(32, 200, (batch_size,))
+    indices = torch.arange(0, batch_size, dtype=torch.long)
+    indices = torch.repeat_interleave(indices, lengths, dim=0)
+    latents = 6.3 * torch.rand(indices.size(0), 3)
+    structure = ts.SubgraphStructure(indices)
+    structure.lengths = list(lengths)
+    latents = ts.PackedTensor(latents, lengths=list(lengths))
+    return latents, structure
+
+  def forward(self, sample):
+    angles, subgraph = sample
+    for idx in range(self.repeats):
+      tertiary, _ = self.position_lookup(angles, torch.zeros_like(subgraph.indices))
+
+      asin = angles.sin()
+      acos = angles.cos()
+      afeat = torch.cat((asin, acos), dim=1)
+      features = ts.scatter.batched(self.preprocess_correct, afeat, subgraph.indices)
+      ors = self.orientations(tertiary)
+      pos = tertiary[:, 1]
+      inds = torch.arange(0, pos.size(0), dtype=torch.float, device=pos.device).view(-1, 1)
+      distances = torch.cat((pos, ors, inds), dim=1)
+
+      dist, structure = self.knn_structure(tertiary, subgraph)
+      neighbour_pos = (pos[:, None] - pos[structure.connections] + 1e-6)
+      dist = (neighbour_pos).contiguous()
+      dist = dist.norm(dim=2, keepdim=True)
+      dist = gaussian_rbf(dist, *self.rbf)
+
+      distance_data = RelativeStructure(structure, self.rbf)
+      relative_data = distance_data.message(
+        distances, distances
+      )
+      relative_structure = OrientationStructure(structure, relative_data)
+
+      correction = self.correction(features, relative_structure)
+      angles = angles + self.corrected_angles(correction)
+
+    result = ts.PackedTensor(angles, lengths=list(subgraph.counts))
+
+    return result, subgraph
+
+
 class StructuredDiscriminator(nn.Module):
   def __init__(self, in_size, size, distance_size, sequence_size=20,
                attention_size=128, heads=128, hidden_size=128, mlp_depth=3,

@@ -68,12 +68,12 @@ if __name__ == "__main__":
   data = DoubleFoldNet(sys.argv[1], num_neighbours=num_neighbours, pass_mask=True)
   valid_data = DoubleFoldNet(sys.argv[2], num_neighbours=num_neighbours, pass_mask=True)
   net = SDP(IterativeAttentionDistancePredictor(
-    pair_depth=2, seq_depth=4, size=256, attention_size=64, drop=drop, iterations=20
+    pair_depth=4, seq_depth=4, size=256, attention_size=64, value_size=16, drop=drop, iterations=20
   ))
   training = SupervisedTraining(
     net, data, valid_data,
     [TotalLoss(), TotalLoss()],
-    batch_size=8,
+    batch_size=4,
     max_epochs=1000,
     optimizer=lambda x: torch.optim.Adam(x, lr=1e-3),
     device="cuda:0",
